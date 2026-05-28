@@ -1,0 +1,35 @@
+# ─── PYTHON / FASTAPI ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Ambiente Virtuale
+venv/
+.venv/
+env/
+ENV/
+
+# ─── CONFIGURAZIONI E SEGRETI (CRITICO!) ────────────────────────────────
+# Esclude i file contenenti i secrets di produzione e locali
+.env
+.env.*.local
+!.env.example
+
+# ─── DOCKER E INFRASTRUTTURA ───────────────────────────────────────────
+# Esclude i file di log generati dai container
+*.log
+nginx/certs/
+nginx/dhparam.pem
+
+# ─── IDE / EDITORS ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp

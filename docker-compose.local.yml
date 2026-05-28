@@ -1,0 +1,43 @@
+services:
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fededrome_api_local
+    restart: always
+    env_file: .env
+    ports:
+      - "8000:8000" # Espone FastAPI direttamente sulla macchina host
+    volumes:
+      - .:/app # Monta il codice sorgente per abilitare l'hot-reload locale
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Permette l'accesso ai servizi dell'host (Supabase CLI)
+    networks:
+      - fededrome_local_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: fededrome_redis_local
+    restart: always
+    ports:
+      - "6379:6379" # Espone Redis se si desidera collegarsi con una GUI (es. Redis Insight)
+    volumes:
+      - redis_local_data:/data
+    networks:
+      - fededrome_local_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  redis_local_data:
+
+networks:
+  fededrome_local_network:
+    driver: bridge
