@@ -6,7 +6,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.limiter import limiter
-from app.api.routers import tmdb, movies, watchlist, stats, social, users, youtube
+from app.api.routers import tmdb, movies, watchlist, stats, social, users, youtube, lists
 
 app = FastAPI(
     title="Fededrome API",
@@ -36,6 +36,7 @@ app.include_router(stats.router)
 app.include_router(social.router)
 app.include_router(users.router)
 app.include_router(youtube.router)
+app.include_router(lists.router)
 
 
 @app.get("/health", tags=["System"])

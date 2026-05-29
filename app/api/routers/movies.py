@@ -38,6 +38,7 @@ async def log_movie(log_data: MovieLogCreate, user=Depends(get_current_user)):
                 "rating": log_data.rating,
                 "review": log_data.review,
                 "liked": log_data.liked,
+                "is_rewatch": log_data.is_rewatch,
                 "genres_snapshot": genres_snapshot,
                 "runtime_minutes": runtime_minutes,
             }
@@ -136,6 +137,7 @@ async def get_log_for_movie(tmdb_id: int, user=Depends(get_current_user)):
         .select("*")
         .eq("user_id", user.id)
         .eq("tmdb_id", tmdb_id)
+        .order("watched_date", desc=True)
         .execute()
     )
     if res.data:

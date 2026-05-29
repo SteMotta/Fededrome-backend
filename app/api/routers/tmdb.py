@@ -39,6 +39,21 @@ async def search_movie(
     )
 
 
+@router.get("/search/person")
+@limiter.limit("30/minute")
+async def search_person(
+    request: Request,
+    q: str = Query(..., min_length=1),
+    page: int = 1,
+):
+    """Ricerca persone (cast/crew) — limite 30 richieste/minuto per IP."""
+    return await get_or_set_cache(
+        f"tmdb:search_person_query:{q}:{page}",
+        lambda: fetch_from_tmdb("/search/person", {"query": q, "page": page}),
+        ttl=3600,
+    )
+
+
 @router.get("/trending")
 async def trending_movies():
     """Film in tendenza del giorno con cache 1h."""
@@ -55,5 +70,25 @@ async def get_movie_credits(movie_id: int):
     return await get_or_set_cache(
         f"tmdb:credits_en:{movie_id}",
         lambda: fetch_from_tmdb(f"/movie/{movie_id}/credits", {"language": "en-US"}),
+        ttl=86400,
+    )
+
+
+@router.get("/person/{person_id}")
+async def get_person(person_id: int):
+    """Dettagli anagrafici di un autore/regista con cache 24h."""
+    return await get_or_set_cache(
+        f"tmdb:person:{person_id}",
+        lambda: fetch_from_tmdb(f"/person/{person_id}", {"language": "it-IT"}),
+        ttl=86400,
+    )
+
+
+@router.get("/person/{person_id}/credits")
+async def get_person_credits(person_id: int):
+    """Filmografia (cast e crew) di un autore/regista con cache 24h."""
+    return await get_or_set_cache(
+        f"tmdb:person_credits:{person_id}",
+        lambda: fetch_from_tmdb(f"/person/{person_id}/combined_credits", {"language": "it-IT"}),
         ttl=86400,
     )
