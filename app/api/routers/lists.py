@@ -18,7 +18,8 @@ async def create_list(list_data: CustomListCreate, user=Depends(get_current_user
         .insert({
             "user_id": user.id,
             "name": list_data.name,
-            "description": list_data.description
+            "description": list_data.description,
+            "is_public": list_data.is_public
         })
         .execute()
     )
@@ -47,11 +48,13 @@ async def get_list_details(list_id: int, user=Depends(get_current_user)):
     db = get_service_client()
     
     # 1. Recupera i dettagli della lista
-    list_res = db.table("custom_lists").select("*").eq("id", list_id).eq("user_id", user.id).execute()
+    list_res = db.table("custom_lists").select("*").eq("id", list_id).execute()
     if not list_res.data:
         raise HTTPException(status_code=404, detail="Lista non trovata")
     
     custom_list = list_res.data[0]
+    if custom_list["user_id"] != user.id and not custom_list.get("is_public", False):
+        raise HTTPException(status_code=403, detail="Non autorizzato")
     
     # 2. Recupera i film contenuti nella lista
     movies_res = (
@@ -138,3 +141,27 @@ async def remove_movie_from_list(list_id: int, tmdb_id: int, user=Depends(get_cu
         raise HTTPException(status_code=403, detail="Non autorizzato")
         
     db.table("custom_list_movies").delete().eq("list_id", list_id).eq("tmdb_id", tmdb_id).execute()
+
+
+@router.get("/user/{username}")
+async def get_user_public_lists(username: str, user=Depends(get_current_user)):
+    """Restituisce le liste pubbliche di un utente specifico."""
+    db = get_service_client()
+    
+    # Trova il profilo tramite username
+    profile_res = db.table("profiles").select("id").eq("username", username).single().execute()
+    if not profile_res.data:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+        
+    target_user_id = profile_res.data["id"]
+    
+    # Recupera le liste pubbliche dell'utente
+    res = (
+        db.table("custom_lists")
+        .select("*, custom_list_movies(tmdb_id)")
+        .eq("user_id", target_user_id)
+        .eq("is_public", True)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return res.data

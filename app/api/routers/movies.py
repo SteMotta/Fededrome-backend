@@ -72,6 +72,7 @@ async def get_diary(
     offset = (page - 1) * page_size
     res = (
         query.order("watched_date", desc=True)
+        .order("created_at", desc=True)
         .range(offset, offset + page_size - 1)
         .execute()
     )
@@ -143,3 +144,46 @@ async def get_log_for_movie(tmdb_id: int, user=Depends(get_current_user)):
     if res.data:
         return res.data[0]
     return None
+
+
+@router.get("/{tmdb_id}/reviews")
+async def get_movie_reviews(tmdb_id: int):
+    """Ritorna tutte le recensioni e statistiche di voto di un film (pubbliche)."""
+    db = get_service_client()
+    from collections import Counter
+
+    res = (
+        db.table("movie_logs")
+        .select("*, profiles:user_id(username, avatar_url)")
+        .eq("tmdb_id", tmdb_id)
+        .order("watched_date", desc=True)
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    # Filtra tenendo solo l'ultimo log (watched_date più recente) per ogni utente
+    latest_logs_by_user = {}
+    for log in res.data:
+        uid = log.get("user_id")
+        if uid not in latest_logs_by_user:
+            latest_logs_by_user[uid] = log
+            
+    unique_user_logs = list(latest_logs_by_user.values())
+
+    ratings = [l["rating"] for l in unique_user_logs if l.get("rating") is not None]
+    avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else 0
+    rating_distribution = dict(Counter(str(r) for r in ratings))
+
+    # Filtra i log che hanno una recensione non vuota
+    reviews = [
+        l for l in unique_user_logs
+        if l.get("review") and l.get("review").strip() != ""
+    ]
+
+    return {
+        "average_rating": avg_rating,
+        "total_ratings": len(ratings),
+        "rating_distribution": rating_distribution,
+        "reviews": reviews
+    }
+

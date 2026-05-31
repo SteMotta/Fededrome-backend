@@ -36,6 +36,20 @@ async def unfollow_user(target_user_id: str, user=Depends(get_current_user)):
     ).execute()
 
 
+@router.get("/is-following/{target_user_id}")
+async def check_is_following(target_user_id: str, user=Depends(get_current_user)):
+    """Verifica se l'utente corrente segue l'utente target."""
+    db = get_service_client()
+    res = (
+        db.table("followers")
+        .select("follower_id")
+        .eq("follower_id", user.id)
+        .eq("following_id", target_user_id)
+        .execute()
+    )
+    return {"is_following": len(res.data) > 0}
+
+
 @router.get("/feed")
 async def get_social_feed(page: int = 1, user=Depends(get_current_user)):
     """Ritorna il feed degli utenti seguiti, con dati TMDB arricchiti."""

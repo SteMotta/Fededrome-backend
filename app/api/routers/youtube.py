@@ -6,6 +6,7 @@ import httpx
 import random
 import datetime
 import re
+import html
 
 router = APIRouter(prefix="/youtube", tags=["YouTube"])
 
@@ -106,9 +107,10 @@ async def search_frusciante_video(title: str, year: str, director: str) -> str |
         params = {
             "part": "snippet",
             "q": q,
+            "channelId": "UCeiW1AdgyfDyW5wPLjZqH2Q",  # Canale ufficiale di Federico Frusciante
             "key": settings.YOUTUBE_API_KEY,
             "type": "video",
-            "maxResults": 1,
+            "maxResults": 5,  # Recupera fino a 5 risultati per verificare l'anno corretto
             "order": "relevance"
         }
         
@@ -122,9 +124,47 @@ async def search_frusciante_video(title: str, year: str, director: str) -> str |
             return None
             
         data = response.json()
+        items = data.get("items", [])
         
-        if data.get("items") and len(data["items"]) > 0:
-            return data["items"][0]["id"]["videoId"]
+        if not items:
+            return "none"
+            
+        if not year:
+            # Se non c'è l'anno, restituiamo il primo risultato per compatibilità
+            return items[0]["id"]["videoId"]
+            
+        # Pulisce il titolo del film per un confronto più flessibile (es. rimuove sottotitoli)
+        main_title = title.split(':')[0].split('-')[0].split('–')[0].strip().lower()
+        
+        fallback_item = None
+        for item in items:
+            video_title = html.unescape(item["snippet"]["title"]).lower()
+            video_id = item["id"]["videoId"]
+            
+            # Estrae tutti gli anni a 4 cifre presenti nel titolo del video
+            years_in_title = re.findall(r'\b\d{4}\b', video_title)
+            
+            # Verifica se il titolo principale del film è contenuto nel titolo del video
+            title_matches = main_title in video_title
+            
+            if not title_matches:
+                continue
+                
+            if not years_in_title:
+                # Se non ci sono anni nel titolo ma il titolo corrisponde, lo teniamo come fallback
+                if fallback_item is None:
+                    fallback_item = video_id
+                continue
+                
+            # Se l'anno cercato è presente nel titolo, abbiamo un match esatto!
+            if year in years_in_title:
+                return video_id
+                
+        # Se non abbiamo trovato un match esatto ma abbiamo un fallback senza anno nel titolo, lo usiamo
+        if fallback_item:
+            return fallback_item
+            
+        # Se tutti i video trovati avevano un anno diverso, non restituiamo nulla
         return "none"
 
 @router.get("/frusciante")
@@ -143,31 +183,125 @@ async def get_frusciante_video(
         return None
     return result
 
+# Pool di parole chiave comuni per la ricerca casuale giornaliera
+KEYWORDS_POOL = [
+    "di", "del", "il", "un", "recensione", "minirece", "regia", 
+    "film", "cinema", "anni", "storia", "scelta", "richiesta", 
+    "horror", "thriller", "commedia", "fantascienza", "cult"
+]
+
+def parse_video_title(title: str):
+    # Rimuove prefissi comuni usati nei video di Frusciante
+    t = re.sub(r'^(Patreon|Minirece|Minirecensione|Recensione|Monografia)\s*:\s*', '', title, flags=re.IGNORECASE)
+    # Pattern standard: "Titolo" (Anno) di Nome Regista
+    match = re.search(r'(?:"|“|”)?([^"“”…\(\)]+?)(?:"|“|”)?\s*\((\d{4})\)\s+di\s+([A-Za-zÀ-ÿ\s\.\-\&\’\']+)', t, flags=re.IGNORECASE)
+    if match:
+        movie_title = match.group(1).strip()
+        year = match.group(2).strip()
+        director = match.group(3).split('-')[0].split('–')[0].strip()
+        return movie_title, year, director
+    return None
+
 @router.get("/review-of-the-day")
 async def get_review_of_the_day():
-    """Ritorna la recensione di Federico Frusciante del giorno, deterministica e diversa da ieri."""
+    """Ritorna la recensione di Federico Frusciante del giorno, estratta in modo completamente
+    dinamico e casuale dal suo canale YouTube ufficiale."""
     today = datetime.date.today()
     cache_key = f"youtube:review_of_the_day:{today}"
     
     async def fetch_review():
-        # Calcola l'indice di oggi
+        # Usa il seed del giorno per garantire che il film rimanga lo stesso per tutta la giornata
         today_seed = today.year * 1000 + today.timetuple().tm_yday
         random.seed(today_seed)
-        today_idx = random.randint(0, len(MOVIES_POOL) - 1)
         
-        # Calcola l'indice di ieri
-        yesterday = today - datetime.timedelta(days=1)
-        yesterday_seed = yesterday.year * 1000 + yesterday.timetuple().tm_yday
-        random.seed(yesterday_seed)
-        yesterday_idx = random.randint(0, len(MOVIES_POOL) - 1)
-        
-        # Assicura che sia diverso dal giorno precedente
-        if today_idx == yesterday_idx:
-            today_idx = (today_idx + 1) % len(MOVIES_POOL)
+        # 1. Tenta la ricerca dinamica da YouTube
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            items = []
+            # Prova fino a 5 parole chiave diverse usando il seed deterministico
+            shuffled_keywords = list(KEYWORDS_POOL)
+            random.shuffle(shuffled_keywords)
             
+            for keyword in shuffled_keywords[:5]:
+                try:
+                    url = "https://www.googleapis.com/youtube/v3/search"
+                    params = {
+                        "part": "snippet",
+                        "q": keyword,
+                        "channelId": "UCeiW1AdgyfDyW5wPLjZqH2Q",
+                        "key": settings.YOUTUBE_API_KEY,
+                        "type": "video",
+                        "maxResults": 50,
+                        "order": "relevance"
+                    }
+                    res = await client.get(url, params=params)
+                    if res.status_code == 200:
+                        items = res.json().get("items", [])
+                        if items:
+                            break
+                except Exception as e:
+                    print(f"Errore ricerca YouTube per keyword '{keyword}': {e}")
+                    
+            # 2. Se abbiamo dei video, cerchiamo il primo che si adatta al pattern e ha riscontro su TMDB
+            if items:
+                random.shuffle(items) # Mescola i video trovati usando il seed del giorno
+                
+                for item in items:
+                    title = item["snippet"]["title"]
+                    video_id = item["id"]["videoId"]
+                    parsed = parse_video_title(title)
+                    
+                    if parsed:
+                        m_title, m_year, m_director = parsed
+                        
+                        # Cerca su TMDB per avere poster, backdrop e ID preciso
+                        try:
+                            tmdb_url = "https://api.themoviedb.org/3/search/movie"
+                            res_tmdb = await client.get(tmdb_url, params={
+                                "api_key": settings.TMDB_API_KEY,
+                                "query": m_title,
+                                "primary_release_year": m_year,  # Filtro stretto sull'anno per evitare discrepanze
+                                "language": "it-IT"
+                            })
+                            results = res_tmdb.json().get("results", [])
+                            if not results:
+                                # Riprova senza l'anno per tolleranza
+                                res_tmdb = await client.get(tmdb_url, params={
+                                    "api_key": settings.TMDB_API_KEY,
+                                    "query": m_title,
+                                    "language": "it-IT"
+                                })
+                                results = res_tmdb.json().get("results", [])
+                                
+                            if results:
+                                # Cerca la corrispondenza esatta dell'anno per evitare falsi positivi (es. Old 2021 vs Old Boy 2003)
+                                matched_movie = None
+                                for movie in results:
+                                    release_date = movie.get("release_date", "")
+                                    if release_date and m_year in release_date:
+                                        matched_movie = movie
+                                        break
+                                
+                                # Se non c'è corrispondenza esatta dell'anno, usiamo il primo risultato come fallback
+                                if not matched_movie:
+                                    matched_movie = results[0]
+                                    
+                                return {
+                                    "tmdb_id": matched_movie["id"],
+                                    "title": matched_movie["title"],
+                                    "poster_path": matched_movie.get("poster_path"),
+                                    "backdrop_path": matched_movie.get("backdrop_path"),
+                                    "year": m_year,
+                                    "director": m_director,
+                                    "video_id": video_id
+                                }
+                        except Exception as e:
+                            print(f"Errore ricerca TMDB per '{m_title}': {e}")
+                            
+        # 3. FALLBACK: Se non abbiamo trovato nulla (es. limiti API o nessun match), usiamo il pool statico
+        today_idx = random.randint(0, len(MOVIES_POOL) - 1)
         movie = MOVIES_POOL[today_idx]
         
-        # Arricchisce i dettagli da TMDB (caching per 7 giorni)
+        # Arricchisce i dettagli da TMDB
         try:
             tmdb_data = await get_or_set_cache(
                 f"tmdb:movie:{movie['tmdb_id']}",
@@ -177,7 +311,6 @@ async def get_review_of_the_day():
         except Exception:
             tmdb_data = {}
             
-        # Ottiene la recensione YouTube (caching per 7 giorni)
         video_id = await get_or_set_cache(
             f"youtube:frusciante:{movie['title']}:{movie['year']}",
             lambda: search_frusciante_video(movie['title'], movie['year'], movie['director']),

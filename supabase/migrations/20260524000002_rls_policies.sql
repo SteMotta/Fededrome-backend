@@ -73,3 +73,10 @@ CREATE POLICY "avatars_update_own"
     bucket_id = 'avatars'
     AND (select auth.uid())::text = (storage.foldername(name))[1]
   );
+
+CREATE POLICY "avatars_select_own"
+  ON storage.objects FOR SELECT
+  USING (
+    bucket_id = 'avatars'
+    AND (select auth.uid())::text = (storage.foldername(name))[1]
+  );

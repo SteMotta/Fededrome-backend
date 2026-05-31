@@ -37,6 +37,7 @@
 18. [Docker Compose Completo](#18-docker-compose-completo)
 19. [Nginx Configuration](#19-nginx-configuration)
 20. [Supabase Self-Hosted su Digital Ocean](#20-supabase-self-hosted-su-digital-ocean)
+    - [20.1 Configurazione della Verifica Email e SMTP nel Self-Hosting (GoTrue)](#201-configurazione-della-verifica-email-e-smtp-nel-self-hosting-gotrue)
 21. [Deploy Script e .dockerignore](#21-deploy-script-e-dockerignore)
 
 ### Parte 5 — Checklist
@@ -1401,13 +1402,44 @@ SITE_URL=https://fededrome.com
 API_EXTERNAL_URL=https://db.fededrome.com
 SUPABASE_PUBLIC_URL=https://db.fededrome.com
 
-# Email (es. SendGrid)
+# Email & SMTP (Configurazione standard per l'invio delle email di conferma)
 SMTP_HOST=smtp.sendgrid.net
 SMTP_PORT=587
 SMTP_USER=apikey
 SMTP_PASS=<sendgrid_api_key>
 SMTP_SENDER_EMAIL=noreply@fededrome.com
 ```
+
+### 20.1 Configurazione della Verifica Email e SMTP nel Self-Hosting (GoTrue)
+
+Nel setup self-hosted su VPS, la verifica dell'email non viene controllata dal file `config.toml` della CLI locale, ma viene gestita direttamente dalle **variabili d'ambiente del container GoTrue (l'Auth service di Supabase)** all'interno del file `.env` di Supabase situato sulla VPS.
+
+Se desideri attivare e testare in produzione il flusso di verifica dell'email che abbiamo integrato nell'applicazione Flutter:
+
+1. **Disabilita l'auto-conferma**: Assicurati che nel file `.env` la seguente variabile sia impostata su `false` (costringendo gli utenti a cliccare sul link di verifica prima di poter fare l'accesso):
+   ```dotenv
+   GOTRUE_MAILER_AUTOCONFIRM=false
+   ```
+
+2. **Configura le variabili SMTP di GoTrue**:
+   Assicurati di inserire i parametri di connessione del tuo provider SMTP reale (es. *Resend*, *SendGrid* o *Brevo*) all'interno delle configurazioni di GoTrue:
+   ```dotenv
+   GOTRUE_SMTP_HOST=smtp.sendgrid.net
+   GOTRUE_SMTP_PORT=587
+   GOTRUE_SMTP_USER=apikey
+   GOTRUE_SMTP_PASS=<tua_api_key_smtp>
+   GOTRUE_SMTP_ADMIN_EMAIL=noreply@fededrome.com
+   GOTRUE_SMTP_SENDER_NAME="Fededrome"
+   ```
+
+3. **Configura gli URL di Reindirizzamento (Redirect per l'App Mobile)**:
+   Per consentire al link di verifica contenuto nell'email di riportare correttamente l'utente dentro l'applicazione mobile dopo aver confermato l'account, imposta i parametri di redirect inserendo anche lo schema custom dei Deep Link dell'app Flutter:
+   ```dotenv
+   GOTRUE_SITE_URL=https://fededrome.com
+   # Aggiungi lo schema custom di Flutter (es. fededrome://*) all'allow-list dei redirect
+   GOTRUE_URI_ALLOW_LIST=https://fededrome.com/*,fededrome://*
+   ```
+
 
 ```bash
 # Passo 5 — Avviare Supabase
