@@ -74,9 +74,9 @@ docker compose version
 # Passo 4 — Installare Certbot per SSL
 sudo apt install -y certbot
 
-# Passo 5 — Puntare il dominio api.fededrome.com all'IP del droplet
+# Passo 5 — Puntare il dominio api.fededrome.app all'IP del droplet
 # (da fare nel pannello DNS del registrar, record A)
-# Verificare: nslookup api.fededrome.com
+# Verificare: nslookup api.fededrome.app
 ```
 
 ---
@@ -210,7 +210,7 @@ fededrome-backend/
 
 ```dotenv
 # Supabase — ottenere dall'interfaccia Supabase dopo il deploy self-hosted
-SUPABASE_URL=https://db.fededrome.com
+SUPABASE_URL=https://db.fededrome.app
 SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
@@ -223,7 +223,7 @@ REDIS_URL=redis://fededrome_redis:6379/0
 # Applicazione
 ENV=production
 # Inserire le origini CORS come array JSON valido
-ALLOWED_ORIGINS=["https://fededrome.com", "https://app.fededrome.com"]
+ALLOWED_ORIGINS=["https://fededrome.app", "https://app.fededrome.app"]
 ```
 
 **`.gitignore`**
@@ -1381,7 +1381,7 @@ networks:
 
 ## 19. Nginx Configuration
 
-Di seguito è riportato il file `nginx/nginx.conf` ottimizzato per la produzione. Questa configurazione gestisce sia il dominio delle API `api.fededrome.com` (indirizzando il traffico al container FastAPI) sia il dominio del database `db.fededrome.com` (indirizzando il traffico a Supabase Kong gateway sull'host).
+Di seguito è riportato il file `nginx/nginx.conf` ottimizzato per la produzione. Questa configurazione gestisce sia il dominio delle API `api.fededrome.app` (indirizzando il traffico al container FastAPI) sia il dominio del database `db.fededrome.app` (indirizzando il traffico a Supabase Kong gateway sull'host).
 
 ```nginx
 # nginx/nginx.conf
@@ -1393,19 +1393,19 @@ upstream fastapi_backend {
 # Redirect HTTP → HTTPS for both domains
 server {
     listen 80;
-    server_name api.fededrome.com db.fededrome.com;
+    server_name api.fededrome.app db.fededrome.app;
     return 301 https://$host$request_uri;
 }
 
-# Server Block for api.fededrome.com (FastAPI Backend)
+# Server Block for api.fededrome.app (FastAPI Backend)
 server {
     listen 443 ssl;
     http2 on;
-    server_name api.fededrome.com;
+    server_name api.fededrome.app;
 
     # Let's Encrypt SSL Certificates (using multi-domain cert path)
-    ssl_certificate     /etc/letsencrypt/live/api.fededrome.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/api.fededrome.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/api.fededrome.app/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.fededrome.app/privkey.pem;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
@@ -1442,15 +1442,15 @@ server {
     }
 }
 
-# Server Block for db.fededrome.com (Supabase Kong Gateway)
+# Server Block for db.fededrome.app (Supabase Kong Gateway)
 server {
     listen 443 ssl;
     http2 on;
-    server_name db.fededrome.com;
+    server_name db.fededrome.app;
 
     # Let's Encrypt SSL Certificates (shared multi-domain path)
-    ssl_certificate     /etc/letsencrypt/live/api.fededrome.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/api.fededrome.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/api.fededrome.app/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.fededrome.app/privkey.pem;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;

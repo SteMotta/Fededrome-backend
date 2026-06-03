@@ -69,3 +69,7 @@ volumes:
 networks:
   fededrome_network:
     driver: bridge
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: "fd00:1::/80"

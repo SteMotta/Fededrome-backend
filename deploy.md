@@ -10,9 +10,9 @@ Tutti i servizi sono esposti in modo sicuro sotto HTTPS usando un unico indirizz
 
 ```mermaid
 graph TD
-    Client[Client Mobile / Web] -->|https://fededrome.com| Frontend[Hosting Web es. Vercel / Netlify]
-    Client -->|https://api.fededrome.com| Nginx[VPS Nginx Reverse Proxy - Porta 443]
-    Client -->|https://db.fededrome.com| Nginx
+    Client[Client Mobile / Web] -->|https://fededrome.app| Frontend[Hosting Web es. Vercel / Netlify]
+    Client -->|https://api.fededrome.app| Nginx[VPS Nginx Reverse Proxy - Porta 443]
+    Client -->|https://db.fededrome.app| Nginx
     
     subgraph VPS ["Droplet VPS (Docker)"]
         Nginx -->|Porta 8000 Interna| FastAPI[FastAPI Backend - fededrome_api]
@@ -29,44 +29,44 @@ graph TD
 
 | Servizio / Risorsa | Indirizzo URL Configurato | Puntamento DNS / Target | Note |
 | :--- | :--- | :--- | :--- |
-| **Sito Web / Frontend** | `https://fededrome.com` | Record A → IP Host (Vercel / VPS) | Origine CORS autorizzata |
-| **API Backend (FastAPI)** | `https://api.fededrome.com` | Record A → IP Droplet VPS | Gestito da Nginx su VPS |
-| **Database & Auth (Supabase)** | `https://db.fededrome.com` | Record A → IP Droplet VPS | Gestito da Nginx → Kong |
-| **Google Redirect URI** | `https://db.fededrome.com/auth/v1/callback` | Configurato su Google Cloud Console | Callback del login social |
+| **Sito Web / Frontend** | `https://fededrome.app` | Record A → IP Host (Vercel / VPS) | Origine CORS autorizzata |
+| **API Backend (FastAPI)** | `https://api.fededrome.app` | Record A → IP Droplet VPS | Gestito da Nginx su VPS |
+| **Database & Auth (Supabase)** | `https://db.fededrome.app` | Record A → IP Droplet VPS | Gestito da Nginx → Kong |
+| **Google Redirect URI** | `https://db.fededrome.app/auth/v1/callback` | Configurato su Google Cloud Console | Callback del login social |
 | **Deep Linking Flutter** | `fededrome://*` | Schema custom mobile autorizzato | Gestisce il rientro in-app |
 
 ---
 
-## 📡 Fase 1: Configurazione del Dominio e DNS (DigitalOcean)
+## 📡 Fase 1: Configurazione del Dominio e DNS (su Name.com)
 
-Prima di avviare il Droplet VPS, configura i NameServer e i record DNS.
+Avendo acquistato il dominio su **Name.com**, puoi configurare i puntamenti DNS in due modi diversi:
 
-### 1. Delegare i NameServer (NS)
-Nel pannello del provider in cui hai acquistato il dominio (es. Aruba, Namecheap, GoDaddy), imposta i NameServer di DigitalOcean:
+### Opzione A: Configurare i record direttamente su Name.com (Consigliato)
+1. Accedi a [Name.com](https://www.name.com) ed entra nella tua Dashboard.
+2. Clicca sul dominio `fededrome.app` e vai su **DNS Templates** o **DNS Records**.
+3. Aggiungi i seguenti record:
+   * **Record A per API (FastAPI):**
+     - *Type:* `A` | *Host:* `api` | *Answer:* L'IP pubblico del tuo Droplet VPS | *TTL:* `300`
+   * **Record A per Supabase (Kong/Auth):**
+     - *Type:* `A` | *Host:* `db` | *Answer:* L'IP pubblico del tuo Droplet VPS | *TTL:* `300`
+   * **Record A per il Frontend Web (se hostato su VPS o Vercel):**
+     - *Type:* `A` | *Host:* `@` (lascia vuoto o metti `@`) | *Answer:* L'IP pubblico del Droplet VPS (o l'IP fornito da Vercel) | *TTL:* `300`
+
+### Opzione B: Delegare la gestione DNS a DigitalOcean
+Se preferisci gestire i record da DigitalOcean, modifica i **NameServer (NS)** su Name.com impostando:
 * `ns1.digitalocean.com`
 * `ns2.digitalocean.com`
 * `ns3.digitalocean.com`
+*Poi aggiungi il dominio `fededrome.app` nel pannello **Networking** di DigitalOcean.*
 
-### 2. Aggiungere i Record DNS nel Pannello Networking di DigitalOcean
-Accedi a DigitalOcean, vai su **Networking** > **Domains** > Aggiungi il dominio `fededrome.com`, e configura i seguenti record:
-
-#### A. Record A (Puntamenti IP)
-* **Puntamento per FastAPI (Backend):**
-  - **Type:** `A` | **Hostname:** `api` | **Directs To:** IP Droplet VPS | **TTL:** `3600`
-* **Puntamento per Supabase (Kong/Auth):**
-  - **Type:** `A` | **Hostname:** `db` | **Directs To:** IP Droplet VPS | **TTL:** `3600`
-* **Puntamento per il Web Frontend (se hostato sulla stessa VPS):**
-  - **Type:** `A` | **Hostname:** `@` | **Directs To:** IP Droplet VPS | **TTL:** `3600`
-
-#### B. Record TXT (Deliverability Email e Autorizzazioni SMTP)
-Questi record sono obbligatori per convalidare il dominio sul server SMTP ed evitare che le mail di registrazione finiscano in spam.
-
-* **1. Record SPF (Sender Policy Framework):**
-  - **Type:** `TXT` | **Hostname:** `@` | **Value:** `v=spf1 include:spf.sendinblue.com ~all` (se usi Brevo) oppure `v=spf1 include:amazonses.com ~all` (se usi Resend).
-* **2. Record DKIM (Firma Crittografica):**
-  - **Type:** `TXT` | **Hostname:** `mail._domainkey` (o selettore del provider) | **Value:** Incolla la stringa fornita da Brevo/Resend.
-* **3. Record DMARC:**
-  - **Type:** `TXT` | **Hostname:** `_dmarc` | **Value:** `v=DMARC1; p=none; rua=mailto:dmarc-reports@fededrome.com`
+### Configurazione dei Record TXT per il server SMTP (Resend / Brevo)
+Crea questi record TXT sul tuo gestore DNS (Name.com o DigitalOcean) per validare le email di attivazione:
+* **Record SPF (Sender Policy Framework):**
+  - *Type:* `TXT` | *Host:* `@` | *Value:* `v=spf1 include:spf.sendinblue.com ~all` (se usi Brevo) o `v=spf1 include:amazonses.com ~all` (se usi Resend).
+* **Record DKIM (Firma Mail):**
+  - *Type:* `TXT` | *Host:* `mail._domainkey` (o valore indicato dal provider) | *Value:* La chiave alfanumerica fornita da Brevo/Resend.
+* **Record DMARC (Protezione Spoofing):**
+  - *Type:* `TXT` | *Host:* `_dmarc` | *Value:* `v=DMARC1; p=none; rua=mailto:dmarc-reports@fededrome.app`
 
 ---
 
@@ -114,15 +114,34 @@ sudo systemctl enable docker
 sudo systemctl start docker
 ```
 
+### 1b. Configurazione IPv6 per Docker (Consigliato per preservare i veri IP client)
+Per far sì che Docker gestisca nativamente il traffico IPv6 senza nascondere l'IP reale dei client dietro il gateway del bridge, abilita il supporto IPv6 nel demone di Docker sulla VPS:
+
+1. Crea o modifica il file `/etc/docker/daemon.json`:
+   ```bash
+   sudo nano /etc/docker/daemon.json
+   ```
+2. Aggiungi la configurazione per IPv6 specificando una subnet locale (ULA):
+   ```json
+   {
+     "ipv6": true,
+     "fixed-cidr-v6": "fd00::/80"
+   }
+   ```
+3. Riavvia Docker per applicare le modifiche:
+   ```bash
+   sudo systemctl restart docker
+   ```
+
 ### 2. Generazione Certificati SSL Let's Encrypt (Multi-Dominio)
-Generiamo un unico certificato SSL valido sia per `api.fededrome.com` che per `db.fededrome.com`:
+Generiamo un unico certificato SSL valido sia per `api.fededrome.app` che per `db.fededrome.app`:
 
 ```bash
 # Richiedi il certificato (Certbot userà una porta 80 temporanea standalone)
-sudo certbot certonly --standalone -d api.fededrome.com -d db.fededrome.com \
-  --non-interactive --agree-tos --email admin@fededrome.com
+sudo certbot certonly --standalone -d api.fededrome.app -d db.fededrome.app \
+  --non-interactive --agree-tos --email admin@fededrome.app
 ```
-*I certificati verranno salvati in `/etc/letsencrypt/live/api.fededrome.com/`.*
+*I certificati verranno salvati in `/etc/letsencrypt/live/api.fededrome.app/`.*
 
 ---
 
@@ -203,19 +222,19 @@ SMTP_HOST=smtp.resend.com
 SMTP_PORT=587
 SMTP_USER=resend
 SMTP_PASS=re_tuachiaveapi_resend_generata
-SMTP_SENDER_EMAIL=noreply@fededrome.com
+SMTP_SENDER_EMAIL=noreply@fededrome.app
 
 # Replicazione variabili per GoTrue (Auth)
 GOTRUE_SMTP_HOST=smtp.resend.com
 GOTRUE_SMTP_PORT=587
 GOTRUE_SMTP_USER=resend
 GOTRUE_SMTP_PASS=re_tuachiaveapi_resend_generata
-GOTRUE_SMTP_ADMIN_EMAIL=noreply@fededrome.com
+GOTRUE_SMTP_ADMIN_EMAIL=noreply@fededrome.app
 GOTRUE_SMTP_SENDER_NAME="Fededrome"
 
 # Configurazione Deep Link e Redirects
-GOTRUE_SITE_URL=https://fededrome.com
-GOTRUE_URI_ALLOW_LIST=https://fededrome.com/*,fededrome://*
+GOTRUE_SITE_URL=https://fededrome.app
+GOTRUE_URI_ALLOW_LIST=https://fededrome.app/*,fededrome://*
 
 # Abilitazione Google OAuth
 GOOGLE_ENABLED=true
@@ -229,7 +248,7 @@ Assicurati che sotto il servizio `auth`, all'interno della sezione `environment`
       GOTRUE_EXTERNAL_GOOGLE_ENABLED: ${GOOGLE_ENABLED}
       GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOOGLE_SECRET}
-      GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: https://db.fededrome.com/auth/v1/callback
+      GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: https://db.fededrome.app/auth/v1/callback
 ```
 
 ### 5. Avvio di Supabase
@@ -260,7 +279,7 @@ Compila il file di produzione inserendo le chiavi generate in Supabase e le API 
 
 ```dotenv
 # Supabase (Punta all'URL DNS pubblico di Supabase appena configurato)
-SUPABASE_URL=https://db.fededrome.com
+SUPABASE_URL=https://db.fededrome.app
 SUPABASE_ANON_KEY=incolla_l_anon_key_di_supabase
 SUPABASE_SERVICE_ROLE_KEY=incolla_il_service_role_key_di_supabase
 
@@ -277,7 +296,7 @@ REDIS_URL=redis://fededrome_redis:6379/0
 
 # Configurazione Ambiente
 ENV=production
-ALLOWED_ORIGINS=["https://fededrome.com", "https://app.fededrome.com"]
+ALLOWED_ORIGINS=["https://fededrome.app", "https://app.fededrome.app"]
 ```
 
 ### 2. Applicazione delle Migrazioni SQL in Produzione
@@ -308,8 +327,8 @@ Per far funzionare il login Google sia sulla versione Web che Mobile:
 2. Seleziona il progetto associato a Fededrome.
 3. Vai su **APIs & Services** > **Credentials**.
 4. Modifica il tuo **OAuth 2.0 Client ID** per applicazione Web:
-   - **Authorized JavaScript origins:** `https://fededrome.com`
-   - **Authorized redirect URIs:** `https://db.fededrome.com/auth/v1/callback` (questo corrisponde al valore specificato in `GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI` di GoTrue).
+   - **Authorized JavaScript origins:** `https://fededrome.app`
+   - **Authorized redirect URIs:** `https://db.fededrome.app/auth/v1/callback` (questo corrisponde al valore specificato in `GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI` di GoTrue).
 5. Salva le modifiche.
 
 ---
@@ -323,9 +342,9 @@ Crea o modifica il file `.env` di produzione nel codice del frontend in `c:\User
 
 ```dotenv
 # API Endpoints
-SUPABASE_URL=https://db.fededrome.com
+SUPABASE_URL=https://db.fededrome.app
 SUPABASE_ANON_KEY=incolla_l_anon_key_di_supabase
-API_URL=https://api.fededrome.com
+API_URL=https://api.fededrome.app
 
 # Social login
 GOOGLE_CLIENT_ID_WEB=il_tuo_client_id_google.apps.googleusercontent.com
