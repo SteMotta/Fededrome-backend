@@ -36,13 +36,8 @@
 17. [Dockerfile](#17-dockerfile)
 18. [Docker Compose Completo](#18-docker-compose-completo)
 19. [Nginx Configuration](#19-nginx-configuration)
-20. [Supabase Self-Hosted su Digital Ocean](#20-supabase-self-hosted-su-digital-ocean)
-    - [20.1 Configurazione della Verifica Email e SMTP nel Self-Hosting (GoTrue)](#201-configurazione-della-verifica-email-e-smtp-nel-self-hosting-gotrue)
-21. [Deploy Script e .dockerignore](#21-deploy-script-e-dockerignore)
-
-### Parte 5 — Checklist
-
-22. [Checklist Completa](#22-checklist-completa)
+20. [Guida al Deploy in Produzione (deploy.md)](deploy.md)
+21. [Deploy Script, .dockerignore e Checklist](#21-deploy-script-dockerignore-e-checklist)
 
 ---
 
@@ -984,7 +979,27 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "## 15. Schema SQL Completo (Stato Finale)
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "timestamp": time.time()}
+
+
+app.include_router(tmdb.router, prefix="/api/v1")
+app.include_router(movies.router, prefix="/api/v1")
+app.include_router(watchlist.router, prefix="/api/v1")
+app.include_router(stats.router, prefix="/api/v1")
+app.include_router(social.router, prefix="/api/v1")
+app.include_router(users.router, prefix="/api/v1")
+```
+
+---
+
+## 15. Schema SQL Completo (Stato Finale)
 
 In produzione e in locale, il database è gestito tramite file di migrazione sequenziali memorizzati nella cartella `supabase/migrations/` (eseguiti in ordine cronologico basato sul timestamp del nome del file). 
 
@@ -1211,7 +1226,7 @@ CREATE POLICY "list_movies_insert_own"
   WITH CHECK (
     EXISTS (
       SELECT 1 FROM public.custom_lists 
-      WHERE id = list_id AND user_id = (select auth.uid())
+      WHERE id = list_id AND user_id = (select auth.uid()))
     )
   );
 
@@ -1220,7 +1235,7 @@ CREATE POLICY "list_movies_delete_own"
   USING (
     EXISTS (
       SELECT 1 FROM public.custom_lists 
-      WHERE id = list_id AND user_id = (select auth.uid())
+      WHERE id = list_id AND user_id = (select auth.uid()))
     )
   );
 
@@ -1366,7 +1381,7 @@ networks:
 
 ## 19. Nginx Configuration
 
-Di seguito è riportato il file `nginx/nginx.conf` ottimizzato. Questa configurazione abilita HTTP/2 in modo nativo e sicuro (direttiva `http2 on;` compatibile con Nginx 1.25.1+), applica header di sicurezza robusti e implementa una suite di cifratura moderna (Intermediate Profile di Mozilla) per ottenere un punteggio A+ su SSL Labs.
+Di seguito è riportato il file `nginx/nginx.conf` ottimizzato per la produzione. Questa configurazione gestisce sia il dominio delle API `api.fededrome.com` (indirizzando il traffico al container FastAPI) sia il dominio del database `db.fededrome.com` (indirizzando il traffico a Supabase Kong gateway sull'host).
 
 ```nginx
 # nginx/nginx.conf
@@ -1375,19 +1390,20 @@ upstream fastapi_backend {
     server fastapi:8000;
 }
 
-# Redirect HTTP → HTTPS
+# Redirect HTTP → HTTPS for both domains
 server {
     listen 80;
-    server_name api.fededrome.com;
+    server_name api.fededrome.com db.fededrome.com;
     return 301 https://$host$request_uri;
 }
 
+# Server Block for api.fededrome.com (FastAPI Backend)
 server {
     listen 443 ssl;
     http2 on;
     server_name api.fededrome.com;
 
-    # Certificati Let's Encrypt (generati con Certbot sul droplet)
+    # Let's Encrypt SSL Certificates (using multi-domain cert path)
     ssl_certificate     /etc/letsencrypt/live/api.fededrome.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/api.fededrome.com/privkey.pem;
 
@@ -1403,7 +1419,7 @@ server {
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
-    # Proxy verso FastAPI
+    # Proxy to FastAPI
     location / {
         proxy_pass         http://fastapi_backend;
         proxy_set_header   Host              $host;
@@ -1419,329 +1435,70 @@ server {
         client_max_body_size 5M;
     }
 
-    # Health check: non loggato
+    # Health check: unauthenticated
     location /health {
         proxy_pass http://fastapi_backend/health;
         access_log off;
     }
 }
-```
 
-> [!NOTE]
-> **Rinnovo Automatico dei Certificati SSL (Let's Encrypt)**
-> Dal momento che Nginx in produzione è in ascolto sulla porta 80 e 443 del droplet VPS, se hai utilizzato Certbot in modalità `--standalone` al primo avvio, il comando automatico di rinnovo fallirà perché le porte risulteranno già occupate.
->
-> Per configurare il rinnovo automatico senza disservizi permanenti, imposta un cron job su Ubuntu che spegne temporaneamente il container Nginx prima di richiedere il rinnovo e lo riavvia subito dopo:
-> ```bash
-> # Apri il crontab del root
-> sudo crontab -e
-> 
-> # Aggiungi questa riga per tentare il rinnovo ogni mese arrestando/riavviando solo Nginx
-> 0 3 1 * * certbot renew --pre-hook "docker compose -f /opt/fededrome-backend/docker-compose.yml stop nginx" --post-hook "docker compose -f /opt/fededrome-backend/docker-compose.yml start nginx"
-> ```
+# Server Block for db.fededrome.com (Supabase Kong Gateway)
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name db.fededrome.com;
 
----
+    # Let's Encrypt SSL Certificates (shared multi-domain path)
+    ssl_certificate     /etc/letsencrypt/live/api.fededrome.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.fededrome.com/privkey.pem;
 
-## 20. Supabase Self-Hosted su Digital Ocean
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
 
-Eseguire questi comandi direttamente sul droplet VPS, in una cartella separata dal codice applicativo del backend:
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
-```bash
-# Passo 1 — Clonare il repo ufficiale di Supabase
-git clone --depth 1 https://github.com/supabase/supabase.git /opt/supabase
-cd /opt/supabase/docker
+    # Proxy to Supabase Kong Gateway on the host
+    location / {
+        proxy_pass         http://host.docker.internal:8000;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
 
-# Passo 2 — Copiare il file .env di esempio
-cp .env.example .env
+        # WebSocket support for Realtime
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
 
-# Passo 3 — Generare i secrets (eseguire ogni comando separatamente e salvare i valori)
-echo "POSTGRES_PASSWORD: $(openssl rand -base64 32)"
-echo "JWT_SECRET: $(openssl rand -base64 32)"
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
 
-# Passo 4 — Aprire .env e compilare i valori
-nano .env
-```
-
-### 20.1 Generazione manuale delle Chiavi API (JWT)
-Nel self-hosting, le chiavi API (`ANON_KEY` e `SERVICE_ROLE_KEY`) devono essere generate manualmente firmando dei JWT con il `JWT_SECRET` generato al Passo 3.
-
-Puoi generare queste chiavi usando un tool web come [jwt.io](https://jwt.io) oppure eseguendo questo script Python (assicurati di aver installato PyJWT: `pip install PyJWT`):
-
-```python
-import jwt
-from datetime import datetime, timedelta
-
-# Inserisci qui il JWT_SECRET generato al Passo 3 (minimo 32 caratteri)
-jwt_secret = "IL_TUO_JWT_SECRET_GENERATO"
-
-# Payload per ANON_KEY (privilegi standard, soggetto a RLS e privilegi SQL)
-anon_payload = {
-    "role": "anon",
-    "iss": "supabase",
-    "iat": int(datetime.utcnow().timestamp()),
-    # Scadenza a 10 anni
-    "exp": int((datetime.utcnow() + timedelta(days=3650)).timestamp())
+        # Larger body size for Supabase storage uploads (e.g., 50MB)
+        client_max_body_size 50M;
+    }
 }
-anon_key = jwt.encode(anon_payload, jwt_secret, algorithm="HS256")
-
-# Payload per SERVICE_ROLE_KEY (bypass di RLS, usare solo per backend FastAPI)
-service_payload = {
-    "role": "service_role",
-    "iss": "supabase",
-    "iat": int(datetime.utcnow().timestamp()),
-    "exp": int((datetime.utcnow() + timedelta(days=3650)).timestamp())
-}
-service_key = jwt.encode(service_payload, jwt_secret, algorithm="HS256")
-
-print("ANON_KEY:")
-print(anon_key)
-print("\nSERVICE_ROLE_KEY:")
-print(service_key)
-```
-
-Copia i valori ottenuti e incollali nel file `.env` di Supabase nelle variabili `ANON_KEY` e `SERVICE_ROLE_KEY`.
-
----
-
-### 20.2 Configurazione della Verifica Email e SMTP nel Self-Hosting (GoTrue)
-
-Nel setup self-hosted su VPS, l'invio delle email di conferma (o reset password) viene gestito direttamente dalle **variabili d'ambiente del container GoTrue (l'Auth service di Supabase)** all'interno del file `.env` situato in `/opt/supabase/docker/.env`.
-
-Per testare e attivare in produzione il flusso di conferma delle registrazioni che abbiamo integrato nell'applicazione Flutter, è necessario configurare un server SMTP reale e autenticare il dominio mittente per evitare che le email finiscano in spam.
-
-#### 1. Scegliere e Configurare un Provider SMTP (Esempio: Brevo o Resend)
-
-##### Opzione A: Brevo (Consigliato per iniziare — Piano Gratuito: 300 email/giorno)
-1. Registrati su [Brevo](https://www.brevo.com).
-2. Autentica il tuo dominio mittente:
-   - Vai su **Senders & Domains** > **Domains** > **Add a domain**.
-   - Inserisci il tuo dominio (es. `fededrome.com`).
-   - Brevo genererà una serie di record DNS che dovrai aggiungere sul pannello DNS del registrar del tuo dominio (es. Cloudflare, Aruba, Namecheap).
-3. Configura i record DNS per la massima deliverability:
-   - **SPF (Sender Policy Framework)**: Crea o aggiorna un record `TXT` per autorizzare Brevo a inviare email a nome tuo.
-     - *Nome:* `@` (o vuoto)
-     - *Tipo:* `TXT`
-     - *Valore:* `v=spf1 include:spf.sendinblue.com ~all` (se hai già record SPF, es. Google Workspace, uniscili: `v=spf1 include:spf.sendinblue.com include:_spf.google.com ~all`).
-   - **DKIM (DomainKeys Identified Mail)**: Firma crittograficamente i messaggi.
-     - *Nome:* `mail._domainkey` (o quello indicato da Brevo)
-     - *Tipo:* `TXT`
-     - *Valore:* Copia il valore generato da Brevo (una lunga stringa di caratteri alfanumerici).
-   - **DMARC**: Consente ai server di posta di sapere come comportarsi in caso di fallimento di SPF/DKIM.
-     - *Nome:* `_dmarc`
-     - *Tipo:* `TXT`
-     - *Valore:* `v=DMARC1; p=none; rua=mailto:dmarc-reports@fededrome.com`
-4. Ottieni le credenziali SMTP:
-   - Vai su **SMTP & API** > **SMTP**.
-   - Clicca su **Create a new SMTP key**, nominala (es. `Fededrome Production`) e copia la chiave generata (sarà la tua password SMTP).
-   - Prendi nota dell'Host (`smtp-relay.brevo.com`) e della porta (`587`).
-
-##### Opzione B: Resend (Moderno, specifico per sviluppatori — Piano Gratuito: 3000 email/mese)
-1. Registrati su [Resend](https://resend.com).
-2. Vai su **Domains** > **Add Domain** > inserisci `fededrome.com`.
-3. Aggiungi i record TXT DKIM generati da Resend sul tuo pannello DNS.
-4. Vai su **API Keys** > **Create API Key** (seleziona Full Access) e copia la chiave generata.
-5. I parametri SMTP di Resend sono:
-   - *Host:* `smtp.resend.com`
-   - *Porta:* `587` (TLS)
-   - *Username:* `resend`
-   - *Password:* `<la_tua_api_key_generata>`
-
-#### 2. Configurare le variabili SMTP e GoTrue nel `.env` di Supabase
-Apri il file `/opt/supabase/docker/.env` e sostituisci/aggiungi le seguenti variabili:
-
-```dotenv
-# Disabilita l'auto-conferma per obbligare gli utenti alla verifica email
-GOTRUE_MAILER_AUTOCONFIRM=false
-
-# Configurazione del server SMTP reale (Brevo)
-SMTP_HOST=smtp-relay.brevo.com
-SMTP_PORT=587
-SMTP_USER=tuamail@dominio.com          # L'indirizzo email del tuo account Brevo
-SMTP_PASS=xkeysib-xxxxxxxxxxxxxxxxx   # La chiave SMTP generata su Brevo
-SMTP_SENDER_EMAIL=noreply@fededrome.com # Deve appartenere al dominio verificato su Brevo
-
-# Variabili specifiche per GoTrue (Auth)
-GOTRUE_SMTP_HOST=smtp-relay.brevo.com
-GOTRUE_SMTP_PORT=587
-GOTRUE_SMTP_USER=tuamail@dominio.com
-GOTRUE_SMTP_PASS=xkeysib-xxxxxxxxxxxxxxxxx
-GOTRUE_SMTP_ADMIN_EMAIL=noreply@fededrome.com
-GOTRUE_SMTP_SENDER_NAME="Fededrome"
-```
-
-*Nota: Mappare sia le variabili `SMTP_*` che `GOTRUE_SMTP_*` garantisce la compatibilità con qualsiasi versione del file `docker-compose.yml` di Supabase.*
-
-#### 3. Configurare gli URL di Redirect per l'App Flutter (Deep Linking)
-Per permettere al link di conferma inviato per email di riportare l'utente all'interno dell'app mobile Flutter (invece di atterrare su una pagina bianca), dobbiamo configurare l'allow-list dei redirect e lo schema custom del Deep Link:
-
-```dotenv
-# L'URL del sito principale
-GOTRUE_SITE_URL=https://fededrome.com
-
-# Lista di URI consentiti per il redirect (incluso lo schema custom di Flutter)
-GOTRUE_URI_ALLOW_LIST=https://fededrome.com/*,fededrome://*
 ```
 
 ---
 
-### 20.3 Avvio e Applicazione delle Migrazioni in Produzione
+## 20. Guida al Deploy in Produzione
 
-```bash
-# Passo 5 — Avviare Supabase
-docker compose up -d
-
-# Passo 6 — Attendere che tutti i container siano healthy (~30 secondi)
-docker compose ps
-
-# Passo 7 — Applicare TUTTE le migrazioni in ordine cronologico sul database di produzione
-# (Si assume che il codice del backend sia presente sul server in /opt/fededrome-backend)
-for file in /opt/fededrome-backend/supabase/migrations/*.sql; do
-  echo "Applicazione della migrazione: $file..."
-  docker exec -i supabase-db psql -U postgres -d postgres < "$file"
-done
-
-# Passo 8 — Verificare le tabelle create
-docker exec -it supabase-db psql -U postgres -d postgres -c "\dt public.*"
-```
+Tutte le istruzioni di deploy in produzione (infrastruttura VPS Ubuntu, Docker, Supabase Self-Hosted, SMTP Mail server, Google OAuth e DNS record) sono state estratte ed organizzate nel file dedicato **[deploy.md](file:///c:/Users/stefa/PycharmProjects/Fededrome-backend/deploy.md)** per garantire una consultazione più semplice, pulita e sempre aggiornata.
 
 ---
 
-## 21. Deploy Script e .dockerignore
+## 21. Deploy Script, .dockerignore e Checklist
 
-**`.dockerignore`**
+Tutti i file di supporto al deploy in produzione (come lo script di build automatico `deploy.sh` ed il relativo `.dockerignore`) e la checklist completa di messa in produzione sono disponibili ed organizzati all'interno della guida **[deploy.md](file:///c:/Users/stefa/PycharmProjects/Fededrome-backend/deploy.md)**.
 
-```
-__pycache__/
-*.py[cod]
-*.pyo
-.env
-.env.*
-!.env.example
-venv/
-.venv/
-.git/
-.gitignore
-*.md
-tests/
-.pytest_cache/
-*.egg-info/
-dist/
-nginx/
-migrations/
-```
-
-**`deploy.sh`** — da eseguire sul droplet per ogni aggiornamento:
-
-```bash
-#!/bin/bash
-# deploy.sh
-
-set -e
-
-echo "🚀 Fededrome Deploy — $(date)"
-
-# Pull dell'ultimo codice dal repository
-git pull origin main
-
-# Rebuild dell'immagine FastAPI
-docker compose build --no-cache fastapi
-
-# Riavvio con downtime quasi-nullo (near-zero-downtime)
-# --no-deps: non ricrea Redis e Nginx se non cambiati
-docker compose up -d --no-deps fastapi
-
-# Ricarica Nginx per ri-risolvere l'IP del nuovo container FastAPI ed evitare errori 502
-docker compose exec nginx nginx -s reload 2>/dev/null || true
-
-# Pulizia immagini non più usate
-docker image prune -f
-
-echo "✅ Deploy completato"
-docker compose ps
-```
-
-```bash
-# Rendere eseguibile una sola volta
-chmod +x deploy.sh
-```
-
-**Prima messa in produzione** (solo la prima volta):
-
-```bash
-# Passo 1 — Ottenere il certificato SSL con Certbot
-sudo certbot certonly --standalone -d api.fededrome.com
-
-# Passo 2 — Copiare il repository sul droplet
-git clone https://github.com/tuo-repo/fededrome-backend.git /opt/fededrome-backend
-cd /opt/fededrome-backend
-
-# Passo 3 — Creare il file .env
-cp .env.example .env
-nano .env  # compilare con i valori reali
-
-# Passo 4 — Avviare tutti i container
-docker compose up -d
-
-# Passo 5 — Verificare i log
-docker compose logs -f fastapi
-```
-
----
-
-## PARTE 5 — CHECKLIST
-
----
-
-## 22. Checklist Completa
-
-### Setup Iniziale
-
-- [ ] Python 3.11+ e Docker installati sulla macchina di sviluppo
-- [ ] Droplet Digital Ocean creato (Ubuntu 22.04, min 2GB RAM)
-- [ ] Docker installato sul droplet
-- [ ] Dominio `api.fededrome.com` punta all'IP del droplet (record DNS A)
-
-### Codice Backend
-
-- [ ] Ambiente virtuale creato e dipendenze installate
-- [ ] Struttura cartelle creata con tutti i `__init__.py`
-- [ ] `.env` compilato da `.env.example`
-- [ ] `app/core/config.py` — Settings con tutti i campi
-- [ ] `app/core/security.py` — validazione JWT
-- [ ] `app/core/limiter.py` — rate limiter
-- [ ] `app/services/` — tutti e tre i service file
-- [ ] `app/schemas/` — movie.py e user.py
-- [ ] `app/api/routers/` — tutti e 6 i router (tmdb, movies, watchlist, stats, social, users)
-- [ ] `app/main.py` — tutti i router inclusi, CORS ristretto
-
-### Database
-
-- [ ] Tutte le migrazioni in `supabase/migrations/*.sql` applicate in ordine sul DB di produzione
-- [ ] Storage bucket `avatars` creato e verificato
-
-### Infrastruttura
-
-- [ ] `Dockerfile` presente
-- [ ] `docker-compose.yml` con healthcheck Redis e FastAPI
-- [ ] `nginx/nginx.conf` presente
-- [ ] `.dockerignore` presente
-- [ ] `deploy.sh` presente con `chmod +x`
-
-### Supabase Self-Hosted
-
-- [ ] Repo Supabase clonato in `/opt/supabase`
-- [ ] Secrets generati con `openssl rand`
-- [ ] `.env` Supabase compilato (SMTP incluso)
-- [ ] `docker compose up -d` eseguito e tutti i container healthy
-- [ ] Migration SQL applicata e tabelle verificate
-
-### Primo Deploy
-
-- [ ] Certificato SSL ottenuto con Certbot
-- [ ] Repository clonato sul droplet
-- [ ] `.env` compilato sul droplet
-- [ ] `docker compose up -d` eseguito
-- [ ] `GET https://api.fededrome.com/health` risponde `{"status": "ok"}`
 
 ## 23. Sviluppo e Deploy Locale con Docker Desktop & Supabase CLI
 

@@ -107,10 +107,9 @@ async def search_frusciante_video(title: str, year: str, director: str) -> str |
         params = {
             "part": "snippet",
             "q": q,
-            "channelId": "UCeiW1AdgyfDyW5wPLjZqH2Q",  # Canale ufficiale di Federico Frusciante
             "key": settings.YOUTUBE_API_KEY,
             "type": "video",
-            "maxResults": 5,  # Recupera fino a 5 risultati per verificare l'anno corretto
+            "maxResults": 15,  # Aumentato per consentire il filtraggio client-side del canale
             "order": "relevance"
         }
         
@@ -124,28 +123,45 @@ async def search_frusciante_video(title: str, year: str, director: str) -> str |
             return None
             
         data = response.json()
-        items = data.get("items", [])
+        raw_items = data.get("items", [])
         
-        if not items:
+        if not raw_items:
             return "none"
             
+        # Filtriamo gli items client-side per assicurarci che appartengano al canale di Federico Frusciante
+        # Canale ufficiale: UCeiW1AdgyfDyW5wPLjZqH2Q
+        frusciante_channel_id = "UCeiW1AdgyfDyW5wPLjZqH2Q"
+        items = [
+            item for item in raw_items 
+            if item["snippet"].get("channelId") == frusciante_channel_id
+        ]
+        
+        if not items:
+            # Fallback a tutti i risultati se nessun video appartiene al canale ufficiale
+            items = raw_items
+
         if not year:
             # Se non c'è l'anno, restituiamo il primo risultato per compatibilità
             return items[0]["id"]["videoId"]
             
-        # Pulisce il titolo del film per un confronto più flessibile (es. rimuove sottotitoli)
-        main_title = title.split(':')[0].split('-')[0].split('–')[0].strip().lower()
+        # Pulisce e normalizza i titoli per il confronto
+        # Rimuove spazi e punteggiatura per un confronto flessibile (es. "old boy" -> "oldboy")
+        def normalize(t: str) -> str:
+            return re.sub(r'[^a-z0-9]', '', t.lower())
+            
+        main_title_norm = normalize(title.split(':')[0].split('-')[0].split('–')[0].strip())
         
         fallback_item = None
         for item in items:
             video_title = html.unescape(item["snippet"]["title"]).lower()
+            video_title_norm = normalize(video_title)
             video_id = item["id"]["videoId"]
             
             # Estrae tutti gli anni a 4 cifre presenti nel titolo del video
             years_in_title = re.findall(r'\b\d{4}\b', video_title)
             
-            # Verifica se il titolo principale del film è contenuto nel titolo del video
-            title_matches = main_title in video_title
+            # Verifica corrispondenza normalizzata
+            title_matches = main_title_norm in video_title_norm
             
             if not title_matches:
                 continue
@@ -224,10 +240,10 @@ async def get_review_of_the_day():
             for keyword in shuffled_keywords[:5]:
                 try:
                     url = "https://www.googleapis.com/youtube/v3/search"
+                    # Rimuoviamo channelId e aggiungiamo "Federico Frusciante" alla query di ricerca
                     params = {
                         "part": "snippet",
-                        "q": keyword,
-                        "channelId": "UCeiW1AdgyfDyW5wPLjZqH2Q",
+                        "q": f"Federico Frusciante {keyword}",
                         "key": settings.YOUTUBE_API_KEY,
                         "type": "video",
                         "maxResults": 50,
@@ -235,7 +251,13 @@ async def get_review_of_the_day():
                     }
                     res = await client.get(url, params=params)
                     if res.status_code == 200:
-                        items = res.json().get("items", [])
+                        raw_items = res.json().get("items", [])
+                        # Filtriamo client-side per channelId del canale ufficiale di Federico Frusciante
+                        frusciante_channel_id = "UCeiW1AdgyfDyW5wPLjZqH2Q"
+                        items = [
+                            item for item in raw_items 
+                            if item["snippet"].get("channelId") == frusciante_channel_id
+                        ]
                         if items:
                             break
                 except Exception as e:
