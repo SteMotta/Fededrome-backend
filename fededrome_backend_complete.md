@@ -1366,6 +1366,8 @@ networks:
 
 ## 19. Nginx Configuration
 
+Di seguito è riportato il file `nginx/nginx.conf` ottimizzato. Questa configurazione abilita HTTP/2 in modo nativo e sicuro (direttiva `http2 on;` compatibile con Nginx 1.25.1+), applica header di sicurezza robusti e implementa una suite di cifratura moderna (Intermediate Profile di Mozilla) per ottenere un punteggio A+ su SSL Labs.
+
 ```nginx
 # nginx/nginx.conf
 
@@ -1381,7 +1383,8 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;
     server_name api.fededrome.com;
 
     # Certificati Let's Encrypt (generati con Certbot sul droplet)
@@ -1389,7 +1392,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/api.fededrome.com/privkey.pem;
 
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers on;
     ssl_session_cache shared:SSL:10m;
 
@@ -1423,6 +1426,19 @@ server {
     }
 }
 ```
+
+> [!NOTE]
+> **Rinnovo Automatico dei Certificati SSL (Let's Encrypt)**
+> Dal momento che Nginx in produzione è in ascolto sulla porta 80 e 443 del droplet VPS, se hai utilizzato Certbot in modalità `--standalone` al primo avvio, il comando automatico di rinnovo fallirà perché le porte risulteranno già occupate.
+>
+> Per configurare il rinnovo automatico senza disservizi permanenti, imposta un cron job su Ubuntu che spegne temporaneamente il container Nginx prima di richiedere il rinnovo e lo riavvia subito dopo:
+> ```bash
+> # Apri il crontab del root
+> sudo crontab -e
+> 
+> # Aggiungi questa riga per tentare il rinnovo ogni mese arrestando/riavviando solo Nginx
+> 0 3 1 * * certbot renew --pre-hook "docker compose -f /opt/fededrome-backend/docker-compose.yml stop nginx" --post-hook "docker compose -f /opt/fededrome-backend/docker-compose.yml start nginx"
+> ```
 
 ---
 
