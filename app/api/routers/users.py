@@ -94,6 +94,7 @@ async def get_public_profile(username: str):
 async def get_user_logs(username: str, page: int = 1, page_size: int = 20):
     """Ritorna i log pubblici di un utente specifico."""
     db = get_service_client()
+    import asyncio
     from app.services.tmdb_client import fetch_from_tmdb
     from app.services.cache import get_or_set_cache
 
@@ -114,8 +115,7 @@ async def get_user_logs(username: str, page: int = 1, page_size: int = 20):
         .execute()
     )
 
-    enriched = []
-    for log in res.data:
+    async def enrich_log(log):
         try:
             movie = await get_or_set_cache(
                 f"tmdb:movie:{log['tmdb_id']}",
@@ -126,7 +126,9 @@ async def get_user_logs(username: str, page: int = 1, page_size: int = 20):
             log["year"] = movie.get("release_date", "")[:4]
         except Exception:
             pass
-        enriched.append(log)
+        return log
+
+    enriched = await asyncio.gather(*(enrich_log(log) for log in res.data))
 
     return {"results": enriched, "count": res.count, "page": page}
 

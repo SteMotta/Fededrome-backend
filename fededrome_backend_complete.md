@@ -984,35 +984,16 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
-)
+    allow_methods=["GET", "POST", "## 15. Schema SQL Completo (Stato Finale)
 
-# Routers
-app.include_router(tmdb.router)
-app.include_router(movies.router)
-app.include_router(watchlist.router)
-app.include_router(stats.router)
-app.include_router(social.router)
-app.include_router(users.router)
+In produzione e in locale, il database è gestito tramite file di migrazione sequenziali memorizzati nella cartella `supabase/migrations/` (eseguiti in ordine cronologico basato sul timestamp del nome del file). 
 
-
-@app.get("/health", tags=["System"])
-async def health_check():
-    return {"status": "ok", "timestamp": time.time(), "env": settings.ENV}
-```
-
----
-
-## PARTE 3 — DATABASE
-
----
-
-## 15. Schema SQL Completo
-
-Salvare come `migrations/01_schema.sql` ed eseguire per primo.
+Di seguito viene presentato lo **Schema SQL Consolidato Finale** (comprensivo delle tabelle per le liste personalizzate `custom_lists` e `custom_list_movies`, della colonna `is_rewatch` in `movie_logs`, della colonna `is_public` in `custom_lists` e delle relative relazioni).
 
 ```sql
+-- ─── Schema privato per trigger e funzioni interne ─────────────────────────
+CREATE SCHEMA IF NOT EXISTS private;
+
 -- ─── Profiles ──────────────────────────────────────────────────────────────
 CREATE TABLE public.profiles (
     id          UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -1023,13 +1004,9 @@ CREATE TABLE public.profiles (
     created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Revoca l'accesso SELECT ad anon e authenticated per risolvere i warning di esposizione GraphQL
-REVOKE SELECT ON public.profiles FROM anon, authenticated;
+CREATE INDEX idx_profiles_username ON public.profiles(username);
 
--- Creazione schema privato per funzioni di trigger interne (non esposte alle API REST)
-CREATE SCHEMA IF NOT EXISTS private;
-
--- Trigger: crea profilo automaticamente alla registrazione
+-- Trigger per creare automaticamente il profilo utente alla registrazione
 CREATE OR REPLACE FUNCTION private.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -1056,8 +1033,7 @@ CREATE TABLE public.followers (
     PRIMARY KEY (follower_id, following_id)
 );
 
--- Revoca l'accesso SELECT ad anon e authenticated per risolvere i warning di esposizione GraphQL
-REVOKE SELECT ON public.followers FROM anon, authenticated;
+CREATE INDEX idx_followers_following ON public.followers(following_id);
 
 -- ─── Movie Logs ────────────────────────────────────────────────────────────
 CREATE TABLE public.movie_logs (
@@ -1068,19 +1044,17 @@ CREATE TABLE public.movie_logs (
     rating          NUMERIC(2,1) CHECK (rating >= 0.5 AND rating <= 5.0),
     review          TEXT DEFAULT '',
     liked           BOOLEAN DEFAULT FALSE,
+    is_rewatch      BOOLEAN DEFAULT FALSE,
     genres_snapshot JSONB DEFAULT '[]',
     runtime_minutes SMALLINT,
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Revoca l'accesso SELECT ad anon e authenticated per risolvere i warning di esposizione GraphQL
-REVOKE SELECT ON public.movie_logs FROM anon, authenticated;
-
 CREATE INDEX idx_logs_user_date ON public.movie_logs(user_id, watched_date DESC);
 CREATE INDEX idx_logs_tmdb      ON public.movie_logs(tmdb_id);
 
--- Trigger: aggiorna updated_at automaticamente
+-- Trigger per aggiornare automaticamente updated_at
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
@@ -1098,40 +1072,81 @@ CREATE TABLE public.watchlist (
     PRIMARY KEY (user_id, tmdb_id)
 );
 
--- Revoca l'accesso SELECT ad anon e authenticated per risolvere i warning di esposizione GraphQL
-REVOKE SELECT ON public.watchlist FROM anon, authenticated;
-
 CREATE INDEX idx_watchlist_user ON public.watchlist(user_id);
+
+-- ─── Custom Lists ──────────────────────────────────────────────────────────
+CREATE TABLE public.custom_lists (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    is_public   BOOLEAN DEFAULT FALSE,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_custom_lists_user ON public.custom_lists(user_id);
+
+CREATE TRIGGER custom_lists_updated_at
+  BEFORE UPDATE ON public.custom_lists
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ─── Custom List Movies ────────────────────────────────────────────────────
+CREATE TABLE public.custom_list_movies (
+    list_id    BIGINT NOT NULL REFERENCES public.custom_lists(id) ON DELETE CASCADE,
+    tmdb_id    INTEGER NOT NULL,
+    added_at   TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (list_id, tmdb_id)
+);
+
+CREATE INDEX idx_custom_list_movies_list ON public.custom_list_movies(list_id);
 ```
 
 ---
 
-## 16. RLS Policies e Storage Bucket
+## 16. RLS Policies, Sicurezza e Storage Bucket
 
-Salvare come `migrations/02_rls_policies.sql` ed eseguire **dopo** lo schema.
+Di seguito sono presentate le politiche RLS (Row Level Security) finali e la configurazione dello Storage Bucket. Poiché la nostra architettura utilizza FastAPI come proxy esclusivo per le letture e le scritture del database (effettuate tramite la chiave `service_role` che scavalca l'RLS), l'accesso diretto via API REST client è blindato.
 
 ```sql
--- ─── Abilita RLS su tutte le tabelle ───────────────────────────────────────
-ALTER TABLE public.profiles    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.followers   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.movie_logs  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.watchlist   ENABLE ROW LEVEL SECURITY;
+-- ─── Abilitazione RLS su tutte le tabelle ──────────────────────────────────
+ALTER TABLE public.profiles            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.followers           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.movie_logs          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.watchlist           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.custom_lists        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.custom_list_movies  ENABLE ROW LEVEL SECURITY;
 
--- ─── Disabilita pg_graphql per proteggere la struttura del database ──────────
-COMMENT ON TABLE public.profiles IS '@graphql(disable: true)';
-COMMENT ON TABLE public.followers IS '@graphql(disable: true)';
-COMMENT ON TABLE public.movie_logs IS '@graphql(disable: true)';
-COMMENT ON TABLE public.watchlist IS '@graphql(disable: true)';
+-- ─── Disabilitazione pg_graphql per prevenire l'esposizione dello schema ───────
+COMMENT ON TABLE public.profiles           IS '@graphql(disable: true)';
+COMMENT ON TABLE public.followers          IS '@graphql(disable: true)';
+COMMENT ON TABLE public.movie_logs         IS '@graphql(disable: true)';
+COMMENT ON TABLE public.watchlist          IS '@graphql(disable: true)';
+COMMENT ON TABLE public.custom_lists       IS '@graphql(disable: true)';
+COMMENT ON TABLE public.custom_list_movies IS '@graphql(disable: true)';
 
--- ─── Profiles ──────────────────────────────────────────────────────────────
+-- ─── Protezione dell'accesso diretto client (GraphQL & PostgREST) ────────────
+-- Revoca completa del privilegio SELECT a anon ed authenticated su tutte le tabelle.
+-- Le letture/scritture passano esclusivamente per FastAPI (usando la chiave service_role).
+REVOKE SELECT ON public.profiles           FROM anon, authenticated;
+REVOKE SELECT ON public.followers          FROM anon, authenticated;
+REVOKE SELECT ON public.movie_logs         FROM anon, authenticated;
+REVOKE SELECT ON public.watchlist          FROM anon, authenticated;
+REVOKE SELECT ON public.custom_lists       FROM anon, authenticated;
+REVOKE SELECT ON public.custom_list_movies FROM anon, authenticated;
+
+-- Nota: Le policy RLS restano definite a scopo precauzionale e di pulizia logica.
+-- Nel caso in cui in futuro si decida di abilitare query dirette dal frontend,
+-- queste policy garantiscono la corretta segregazione dei dati.
+
+-- ─── Policy Profiles ───────────────────────────────────────────────────────
 CREATE POLICY "profiles_select_public"
   ON public.profiles FOR SELECT USING (true);
 
 CREATE POLICY "profiles_update_own"
   ON public.profiles FOR UPDATE USING ((select auth.uid()) = id);
 
--- ─── Movie Logs ────────────────────────────────────────────────────────────
--- I log sono pubblici (come su Letterboxd)
+-- ─── Policy Movie Logs ─────────────────────────────────────────────────────
 CREATE POLICY "logs_select_public"
   ON public.movie_logs FOR SELECT USING (true);
 
@@ -1144,8 +1159,7 @@ CREATE POLICY "logs_update_own"
 CREATE POLICY "logs_delete_own"
   ON public.movie_logs FOR DELETE USING ((select auth.uid()) = user_id);
 
--- ─── Watchlist ─────────────────────────────────────────────────────────────
--- La watchlist è privata
+-- ─── Policy Watchlist (Privata) ────────────────────────────────────────────
 CREATE POLICY "watchlist_select_own"
   ON public.watchlist FOR SELECT USING ((select auth.uid()) = user_id);
 
@@ -1155,7 +1169,7 @@ CREATE POLICY "watchlist_insert_own"
 CREATE POLICY "watchlist_delete_own"
   ON public.watchlist FOR DELETE USING ((select auth.uid()) = user_id);
 
--- ─── Followers ─────────────────────────────────────────────────────────────
+-- ─── Policy Followers ──────────────────────────────────────────────────────
 CREATE POLICY "followers_select_public"
   ON public.followers FOR SELECT USING (true);
 
@@ -1165,14 +1179,58 @@ CREATE POLICY "followers_insert_own"
 CREATE POLICY "followers_delete_own"
   ON public.followers FOR DELETE USING ((select auth.uid()) = follower_id);
 
--- ─── Storage: bucket avatar ────────────────────────────────────────────────
--- Nota: Essendo un bucket pubblico (public = true), gli oggetti sono accessibili
--- pubblicamente tramite URL diretto. Non è necessaria una policy SELECT di tipo broad,
--- il che previene l'enumerazione (listing) indesiderata dei file da parte dei client.
+-- ─── Policy Custom Lists ───────────────────────────────────────────────────
+CREATE POLICY "lists_select_authorized" 
+  ON public.custom_lists FOR SELECT 
+  USING (is_public = true OR (select auth.uid()) = user_id);
+
+CREATE POLICY "lists_insert_own" 
+  ON public.custom_lists FOR INSERT 
+  WITH CHECK ((select auth.uid()) = user_id);
+
+CREATE POLICY "lists_update_own" 
+  ON public.custom_lists FOR UPDATE 
+  USING ((select auth.uid()) = user_id);
+
+CREATE POLICY "lists_delete_own" 
+  ON public.custom_lists FOR DELETE 
+  USING ((select auth.uid()) = user_id);
+
+-- ─── Policy Custom List Movies ─────────────────────────────────────────────
+CREATE POLICY "list_movies_select_authorized" 
+  ON public.custom_list_movies FOR SELECT 
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.custom_lists 
+      WHERE id = list_id AND (is_public = true OR user_id = (select auth.uid()))
+    )
+  );
+
+CREATE POLICY "list_movies_insert_own" 
+  ON public.custom_list_movies FOR INSERT 
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.custom_lists 
+      WHERE id = list_id AND user_id = (select auth.uid())
+    )
+  );
+
+CREATE POLICY "list_movies_delete_own" 
+  ON public.custom_list_movies FOR DELETE 
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.custom_lists 
+      WHERE id = list_id AND user_id = (select auth.uid())
+    )
+  );
+
+-- ─── Storage: bucket public.avatars ────────────────────────────────────────
+-- Crea il bucket pubblico per gli avatar se non esiste
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('avatars', 'avatars', true)
 ON CONFLICT DO NOTHING;
 
+-- Policy per consentire il caricamento solo nella propria cartella (usando l'ID utente come prefisso)
 CREATE POLICY "avatars_upload_own"
   ON storage.objects FOR INSERT
   WITH CHECK (
@@ -1370,7 +1428,7 @@ server {
 
 ## 20. Supabase Self-Hosted su Digital Ocean
 
-Eseguire questi comandi direttamente sul droplet, in una cartella separata dal backend:
+Eseguire questi comandi direttamente sul droplet VPS, in una cartella separata dal codice applicativo del backend:
 
 ```bash
 # Passo 1 — Clonare il repo ufficiale di Supabase
@@ -1388,58 +1446,129 @@ echo "JWT_SECRET: $(openssl rand -base64 32)"
 nano .env
 ```
 
-Valori chiave da impostare nel `.env` di Supabase:
+### 20.1 Generazione manuale delle Chiavi API (JWT)
+Nel self-hosting, le chiavi API (`ANON_KEY` e `SERVICE_ROLE_KEY`) devono essere generate manualmente firmando dei JWT con il `JWT_SECRET` generato al Passo 3.
 
-```dotenv
-POSTGRES_PASSWORD=<valore generato>
-JWT_SECRET=<valore generato, minimo 32 caratteri>
+Puoi generare queste chiavi usando un tool web come [jwt.io](https://jwt.io) oppure eseguendo questo script Python (assicurati di aver installato PyJWT: `pip install PyJWT`):
 
-# Generare ANON_KEY e SERVICE_ROLE_KEY su https://supabase.com/docs/guides/self-hosting/docker#generate-api-keys
-ANON_KEY=<jwt generato con payload role:anon>
-SERVICE_ROLE_KEY=<jwt generato con payload role:service_role>
+```python
+import jwt
+from datetime import datetime, timedelta
 
-SITE_URL=https://fededrome.com
-API_EXTERNAL_URL=https://db.fededrome.com
-SUPABASE_PUBLIC_URL=https://db.fededrome.com
+# Inserisci qui il JWT_SECRET generato al Passo 3 (minimo 32 caratteri)
+jwt_secret = "IL_TUO_JWT_SECRET_GENERATO"
 
-# Email & SMTP (Configurazione standard per l'invio delle email di conferma)
-SMTP_HOST=smtp.sendgrid.net
-SMTP_PORT=587
-SMTP_USER=apikey
-SMTP_PASS=<sendgrid_api_key>
-SMTP_SENDER_EMAIL=noreply@fededrome.com
+# Payload per ANON_KEY (privilegi standard, soggetto a RLS e privilegi SQL)
+anon_payload = {
+    "role": "anon",
+    "iss": "supabase",
+    "iat": int(datetime.utcnow().timestamp()),
+    # Scadenza a 10 anni
+    "exp": int((datetime.utcnow() + timedelta(days=3650)).timestamp())
+}
+anon_key = jwt.encode(anon_payload, jwt_secret, algorithm="HS256")
+
+# Payload per SERVICE_ROLE_KEY (bypass di RLS, usare solo per backend FastAPI)
+service_payload = {
+    "role": "service_role",
+    "iss": "supabase",
+    "iat": int(datetime.utcnow().timestamp()),
+    "exp": int((datetime.utcnow() + timedelta(days=3650)).timestamp())
+}
+service_key = jwt.encode(service_payload, jwt_secret, algorithm="HS256")
+
+print("ANON_KEY:")
+print(anon_key)
+print("\nSERVICE_ROLE_KEY:")
+print(service_key)
 ```
 
-### 20.1 Configurazione della Verifica Email e SMTP nel Self-Hosting (GoTrue)
+Copia i valori ottenuti e incollali nel file `.env` di Supabase nelle variabili `ANON_KEY` e `SERVICE_ROLE_KEY`.
 
-Nel setup self-hosted su VPS, la verifica dell'email non viene controllata dal file `config.toml` della CLI locale, ma viene gestita direttamente dalle **variabili d'ambiente del container GoTrue (l'Auth service di Supabase)** all'interno del file `.env` di Supabase situato sulla VPS.
+---
 
-Se desideri attivare e testare in produzione il flusso di verifica dell'email che abbiamo integrato nell'applicazione Flutter:
+### 20.2 Configurazione della Verifica Email e SMTP nel Self-Hosting (GoTrue)
 
-1. **Disabilita l'auto-conferma**: Assicurati che nel file `.env` la seguente variabile sia impostata su `false` (costringendo gli utenti a cliccare sul link di verifica prima di poter fare l'accesso):
-   ```dotenv
-   GOTRUE_MAILER_AUTOCONFIRM=false
-   ```
+Nel setup self-hosted su VPS, l'invio delle email di conferma (o reset password) viene gestito direttamente dalle **variabili d'ambiente del container GoTrue (l'Auth service di Supabase)** all'interno del file `.env` situato in `/opt/supabase/docker/.env`.
 
-2. **Configura le variabili SMTP di GoTrue**:
-   Assicurati di inserire i parametri di connessione del tuo provider SMTP reale (es. *Resend*, *SendGrid* o *Brevo*) all'interno delle configurazioni di GoTrue:
-   ```dotenv
-   GOTRUE_SMTP_HOST=smtp.sendgrid.net
-   GOTRUE_SMTP_PORT=587
-   GOTRUE_SMTP_USER=apikey
-   GOTRUE_SMTP_PASS=<tua_api_key_smtp>
-   GOTRUE_SMTP_ADMIN_EMAIL=noreply@fededrome.com
-   GOTRUE_SMTP_SENDER_NAME="Fededrome"
-   ```
+Per testare e attivare in produzione il flusso di conferma delle registrazioni che abbiamo integrato nell'applicazione Flutter, è necessario configurare un server SMTP reale e autenticare il dominio mittente per evitare che le email finiscano in spam.
 
-3. **Configura gli URL di Reindirizzamento (Redirect per l'App Mobile)**:
-   Per consentire al link di verifica contenuto nell'email di riportare correttamente l'utente dentro l'applicazione mobile dopo aver confermato l'account, imposta i parametri di redirect inserendo anche lo schema custom dei Deep Link dell'app Flutter:
-   ```dotenv
-   GOTRUE_SITE_URL=https://fededrome.com
-   # Aggiungi lo schema custom di Flutter (es. fededrome://*) all'allow-list dei redirect
-   GOTRUE_URI_ALLOW_LIST=https://fededrome.com/*,fededrome://*
-   ```
+#### 1. Scegliere e Configurare un Provider SMTP (Esempio: Brevo o Resend)
 
+##### Opzione A: Brevo (Consigliato per iniziare — Piano Gratuito: 300 email/giorno)
+1. Registrati su [Brevo](https://www.brevo.com).
+2. Autentica il tuo dominio mittente:
+   - Vai su **Senders & Domains** > **Domains** > **Add a domain**.
+   - Inserisci il tuo dominio (es. `fededrome.com`).
+   - Brevo genererà una serie di record DNS che dovrai aggiungere sul pannello DNS del registrar del tuo dominio (es. Cloudflare, Aruba, Namecheap).
+3. Configura i record DNS per la massima deliverability:
+   - **SPF (Sender Policy Framework)**: Crea o aggiorna un record `TXT` per autorizzare Brevo a inviare email a nome tuo.
+     - *Nome:* `@` (o vuoto)
+     - *Tipo:* `TXT`
+     - *Valore:* `v=spf1 include:spf.sendinblue.com ~all` (se hai già record SPF, es. Google Workspace, uniscili: `v=spf1 include:spf.sendinblue.com include:_spf.google.com ~all`).
+   - **DKIM (DomainKeys Identified Mail)**: Firma crittograficamente i messaggi.
+     - *Nome:* `mail._domainkey` (o quello indicato da Brevo)
+     - *Tipo:* `TXT`
+     - *Valore:* Copia il valore generato da Brevo (una lunga stringa di caratteri alfanumerici).
+   - **DMARC**: Consente ai server di posta di sapere come comportarsi in caso di fallimento di SPF/DKIM.
+     - *Nome:* `_dmarc`
+     - *Tipo:* `TXT`
+     - *Valore:* `v=DMARC1; p=none; rua=mailto:dmarc-reports@fededrome.com`
+4. Ottieni le credenziali SMTP:
+   - Vai su **SMTP & API** > **SMTP**.
+   - Clicca su **Create a new SMTP key**, nominala (es. `Fededrome Production`) e copia la chiave generata (sarà la tua password SMTP).
+   - Prendi nota dell'Host (`smtp-relay.brevo.com`) e della porta (`587`).
+
+##### Opzione B: Resend (Moderno, specifico per sviluppatori — Piano Gratuito: 3000 email/mese)
+1. Registrati su [Resend](https://resend.com).
+2. Vai su **Domains** > **Add Domain** > inserisci `fededrome.com`.
+3. Aggiungi i record TXT DKIM generati da Resend sul tuo pannello DNS.
+4. Vai su **API Keys** > **Create API Key** (seleziona Full Access) e copia la chiave generata.
+5. I parametri SMTP di Resend sono:
+   - *Host:* `smtp.resend.com`
+   - *Porta:* `587` (TLS)
+   - *Username:* `resend`
+   - *Password:* `<la_tua_api_key_generata>`
+
+#### 2. Configurare le variabili SMTP e GoTrue nel `.env` di Supabase
+Apri il file `/opt/supabase/docker/.env` e sostituisci/aggiungi le seguenti variabili:
+
+```dotenv
+# Disabilita l'auto-conferma per obbligare gli utenti alla verifica email
+GOTRUE_MAILER_AUTOCONFIRM=false
+
+# Configurazione del server SMTP reale (Brevo)
+SMTP_HOST=smtp-relay.brevo.com
+SMTP_PORT=587
+SMTP_USER=tuamail@dominio.com          # L'indirizzo email del tuo account Brevo
+SMTP_PASS=xkeysib-xxxxxxxxxxxxxxxxx   # La chiave SMTP generata su Brevo
+SMTP_SENDER_EMAIL=noreply@fededrome.com # Deve appartenere al dominio verificato su Brevo
+
+# Variabili specifiche per GoTrue (Auth)
+GOTRUE_SMTP_HOST=smtp-relay.brevo.com
+GOTRUE_SMTP_PORT=587
+GOTRUE_SMTP_USER=tuamail@dominio.com
+GOTRUE_SMTP_PASS=xkeysib-xxxxxxxxxxxxxxxxx
+GOTRUE_SMTP_ADMIN_EMAIL=noreply@fededrome.com
+GOTRUE_SMTP_SENDER_NAME="Fededrome"
+```
+
+*Nota: Mappare sia le variabili `SMTP_*` che `GOTRUE_SMTP_*` garantisce la compatibilità con qualsiasi versione del file `docker-compose.yml` di Supabase.*
+
+#### 3. Configurare gli URL di Redirect per l'App Flutter (Deep Linking)
+Per permettere al link di conferma inviato per email di riportare l'utente all'interno dell'app mobile Flutter (invece di atterrare su una pagina bianca), dobbiamo configurare l'allow-list dei redirect e lo schema custom del Deep Link:
+
+```dotenv
+# L'URL del sito principale
+GOTRUE_SITE_URL=https://fededrome.com
+
+# Lista di URI consentiti per il redirect (incluso lo schema custom di Flutter)
+GOTRUE_URI_ALLOW_LIST=https://fededrome.com/*,fededrome://*
+```
+
+---
+
+### 20.3 Avvio e Applicazione delle Migrazioni in Produzione
 
 ```bash
 # Passo 5 — Avviare Supabase
@@ -1448,16 +1577,15 @@ docker compose up -d
 # Passo 6 — Attendere che tutti i container siano healthy (~30 secondi)
 docker compose ps
 
-# Passo 7 — Applicare le migration SQL
-docker exec -i supabase-db psql -U postgres -d postgres \
-  < /path/to/fededrome-backend/migrations/01_schema.sql
+# Passo 7 — Applicare TUTTE le migrazioni in ordine cronologico sul database di produzione
+# (Si assume che il codice del backend sia presente sul server in /opt/fededrome-backend)
+for file in /opt/fededrome-backend/supabase/migrations/*.sql; do
+  echo "Applicazione della migrazione: $file..."
+  docker exec -i supabase-db psql -U postgres -d postgres < "$file"
+done
 
-docker exec -i supabase-db psql -U postgres -d postgres \
-  < /path/to/fededrome-backend/migrations/02_rls_policies.sql
-
-# Passo 8 — Verificare le tabelle
-docker exec -it supabase-db psql -U postgres -d postgres \
-  -c "\dt public.*"
+# Passo 8 — Verificare le tabelle create
+docker exec -it supabase-db psql -U postgres -d postgres -c "\dt public.*"
 ```
 
 ---
@@ -1572,8 +1700,7 @@ docker compose logs -f fastapi
 
 ### Database
 
-- [ ] `migrations/01_schema.sql` eseguito su Supabase
-- [ ] `migrations/02_rls_policies.sql` eseguito su Supabase
+- [ ] Tutte le migrazioni in `supabase/migrations/*.sql` applicate in ordine sul DB di produzione
 - [ ] Storage bucket `avatars` creato e verificato
 
 ### Infrastruttura

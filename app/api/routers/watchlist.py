@@ -28,6 +28,21 @@ async def get_watchlist(user=Depends(get_current_user)):
 async def add_to_watchlist(item: WatchlistAdd, user=Depends(get_current_user)):
     """Aggiunge un film alla watchlist."""
     db = get_service_client()
+    
+    # Verifica se il film è già stato visto/loggato
+    logs = (
+        db.table("movie_logs")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("tmdb_id", item.tmdb_id)
+        .execute()
+    )
+    if logs.data:
+        raise HTTPException(
+            status_code=400,
+            detail="Non puoi aggiungere alla watchlist un film che hai già visto/loggato."
+        )
+
     try:
         res = (
             db.table("watchlist")

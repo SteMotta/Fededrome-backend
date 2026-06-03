@@ -1,4 +1,5 @@
 import json
+import inspect
 import redis.asyncio as redis
 from typing import Callable, Any
 from app.core.config import settings
@@ -12,7 +13,9 @@ async def get_or_set_cache(key: str, fetch_func: Callable, ttl: int = 3600) -> A
     if cached:
         return json.loads(cached)
 
-    data = await fetch_func()
+    data = fetch_func()
+    if inspect.isawaitable(data):
+        data = await data
 
     if data:
         await redis_client.setex(key, ttl, json.dumps(data))

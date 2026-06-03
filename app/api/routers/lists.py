@@ -46,6 +46,7 @@ async def get_my_lists(user=Depends(get_current_user)):
 async def get_list_details(list_id: int, user=Depends(get_current_user)):
     """Restituisce i dettagli della lista e i film contenuti."""
     db = get_service_client()
+    import asyncio
     
     # 1. Recupera i dettagli della lista
     list_res = db.table("custom_lists").select("*").eq("id", list_id).execute()
@@ -65,8 +66,7 @@ async def get_list_details(list_id: int, user=Depends(get_current_user)):
         .execute()
     )
     
-    enriched = []
-    for m in movies_res.data:
+    async def enrich_movie(m):
         try:
             movie = await get_or_set_cache(
                 f"tmdb:movie:{m['tmdb_id']}",
@@ -77,7 +77,9 @@ async def get_list_details(list_id: int, user=Depends(get_current_user)):
             m["year"] = movie.get("release_date", "")[:4]
         except Exception:
             pass
-        enriched.append(m)
+        return m
+        
+    enriched = await asyncio.gather(*(enrich_movie(m) for m in movies_res.data))
         
     custom_list["movies"] = enriched
     return custom_list

@@ -54,6 +54,8 @@ async def check_is_following(target_user_id: str, user=Depends(get_current_user)
 async def get_social_feed(page: int = 1, user=Depends(get_current_user)):
     """Ritorna il feed degli utenti seguiti, con dati TMDB arricchiti."""
     db = get_service_client()
+    import asyncio
+    
     follows_res = (
         db.table("followers")
         .select("following_id")
@@ -75,8 +77,7 @@ async def get_social_feed(page: int = 1, user=Depends(get_current_user)):
         .execute()
     )
 
-    enriched = []
-    for log in feed_res.data:
+    async def enrich_log(log):
         try:
             movie = await get_or_set_cache(
                 f"tmdb:movie:{log['tmdb_id']}",
@@ -86,6 +87,8 @@ async def get_social_feed(page: int = 1, user=Depends(get_current_user)):
             log["poster_path"] = movie.get("poster_path")
         except Exception:
             pass
-        enriched.append(log)
+        return log
+
+    enriched = await asyncio.gather(*(enrich_log(log) for log in feed_res.data))
 
     return {"results": enriched, "count": feed_res.count, "page": page}

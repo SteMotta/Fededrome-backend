@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from app.core.security import get_current_user
@@ -25,6 +26,24 @@ async def log_movie(log_data: MovieLogCreate, user=Depends(get_current_user)):
         )
         genres_snapshot = movie.get("genres", [])
         runtime_minutes = movie.get("runtime")
+        
+        # Verifica se il film è già uscito nelle sale
+        release_date_str = movie.get("release_date")
+        if release_date_str:
+            from datetime import datetime
+            release_date = datetime.strptime(release_date_str, "%Y-%m-%d").date()
+            if release_date > date.today():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Non puoi registrare questo film perché non è ancora uscito nelle sale (Data di uscita: {release_date_str})"
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Non puoi registrare questo film perché non ha una data di uscita valida."
+            )
+    except HTTPException:
+        raise
     except Exception:
         pass
 
@@ -48,6 +67,13 @@ async def log_movie(log_data: MovieLogCreate, user=Depends(get_current_user)):
 
     if not res.data:
         raise HTTPException(status_code=500, detail="Errore inserimento DB")
+
+    # Rimuovi automaticamente dalla watchlist se presente
+    try:
+        db.table("watchlist").delete().eq("user_id", user.id).eq("tmdb_id", log_data.tmdb_id).execute()
+    except Exception:
+        pass
+
     return res.data[0]
 
 
@@ -77,8 +103,7 @@ async def get_diary(
         .execute()
     )
 
-    enriched = []
-    for log in res.data:
+    async def enrich_log(log):
         try:
             movie = await get_or_set_cache(
                 f"tmdb:movie:{log['tmdb_id']}",
@@ -89,7 +114,9 @@ async def get_diary(
             log["year"] = movie.get("release_date", "")[:4]
         except Exception:
             pass
-        enriched.append(log)
+        return log
+
+    enriched = await asyncio.gather(*(enrich_log(log) for log in res.data))
 
     return {"results": enriched, "count": res.count, "page": page}
 

@@ -1,3 +1,4 @@
+import hashlib
 from fastapi import APIRouter, Query, Request
 from app.services.cache import get_or_set_cache
 from app.services.tmdb_client import fetch_from_tmdb
@@ -32,8 +33,9 @@ async def search_movie(
     page: int = 1,
 ):
     """Ricerca film — limite 30 richieste/minuto per IP."""
+    q_hash = hashlib.md5(q.strip().lower().encode("utf-8")).hexdigest()
     return await get_or_set_cache(
-        f"tmdb:search:{q}:{page}",
+        f"tmdb:search:{q_hash}:{page}",
         lambda: fetch_from_tmdb("/search/multi", {"query": q, "page": page}),
         ttl=3600,
     )
@@ -47,8 +49,9 @@ async def search_person(
     page: int = 1,
 ):
     """Ricerca persone (cast/crew) — limite 30 richieste/minuto per IP."""
+    q_hash = hashlib.md5(q.strip().lower().encode("utf-8")).hexdigest()
     return await get_or_set_cache(
-        f"tmdb:search_person_query:{q}:{page}",
+        f"tmdb:search_person_query:{q_hash}:{page}",
         lambda: fetch_from_tmdb("/search/person", {"query": q, "page": page}),
         ttl=3600,
     )

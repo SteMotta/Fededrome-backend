@@ -1,13 +1,13 @@
 from fastapi import Depends, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from supabase import create_client, Client
-from app.core.config import settings
+from supabase import Client
+from app.services.supabase_client import supabase_anon
 
 security = HTTPBearer()
 
 
 def get_auth_client() -> Client:
-    return create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
+    return supabase_anon
 
 
 async def get_current_user(
