@@ -101,6 +101,8 @@ async def search_frusciante_video(title: str, year: str, director: str) -> str |
     async with httpx.AsyncClient(timeout=10.0) as client:
         url = "https://www.googleapis.com/youtube/v3/search"
         q = f"Federico Frusciante {title}"
+        if director:
+            q += f" {director}"
         if year:
             q += f" {year}"
             
@@ -117,9 +119,9 @@ async def search_frusciante_video(title: str, year: str, director: str) -> str |
         
         try:
             response.raise_for_status()
-            print(f"YouTube API Success: 200 OK\n{response.text}")
+            print(f"YouTube API Success: 200 OK")
         except httpx.HTTPStatusError as e:
-            print(f"YouTube API Error: {e.response.status_code} - {e.response.text}")
+            print(f"YouTube API Error: {e.response.status_code}")
             return None
             
         data = response.json()
@@ -136,9 +138,9 @@ async def search_frusciante_video(title: str, year: str, director: str) -> str |
             if item["snippet"].get("channelId") == frusciante_channel_id
         ]
         
+        # NESSUN FALLBACK: se non ci sono video del canale ufficiale, il film non è recensito da Frusciante
         if not items:
-            # Fallback a tutti i risultati se nessun video appartiene al canale ufficiale
-            items = raw_items
+            return "none"
 
         if not year:
             # Se non c'è l'anno, restituiamo il primo risultato per compatibilità
@@ -146,23 +148,71 @@ async def search_frusciante_video(title: str, year: str, director: str) -> str |
             
         # Pulisce e normalizza i titoli per il confronto
         # Rimuove spazi e punteggiatura per un confronto flessibile (es. "old boy" -> "oldboy")
-        def normalize(t: str) -> str:
+        def normalize_no_spaces(t: str) -> str:
             return re.sub(r'[^a-z0-9]', '', t.lower())
             
-        main_title_norm = normalize(title.split(':')[0].split('-')[0].split('–')[0].strip())
+        # Normalizza preservando gli spazi
+        def normalize_keep_spaces(t: str) -> str:
+            t_clean = re.sub(r'[^a-z0-9\s]', ' ', t.lower())
+            return ' '.join(t_clean.split())
+            
+        def strip_initial_articles(t: str) -> str:
+            articles = [r'^il\s+', r'^lo\s+', r'^la\s+', r'^i\s+', r'^gli\s+', r'^le\s+', r'^un\s+', r'^uno\s+', r'^una\s+', r'^the\s+', r'^a\s+', r'^an\s+']
+            for art in articles:
+                t_new = re.sub(art, '', t)
+                if t_new != t:
+                    return t_new
+            return t
+            
+        main_title_norm_ks = normalize_keep_spaces(title.split(':')[0].split('-')[0].split('–')[0].strip())
+        main_title_stripped_ks = strip_initial_articles(main_title_norm_ks)
+        
+        main_title_norm_ns = normalize_no_spaces(main_title_norm_ks)
+        main_title_stripped_ns = normalize_no_spaces(main_title_stripped_ks)
         
         fallback_item = None
         for item in items:
             video_title = html.unescape(item["snippet"]["title"]).lower()
-            video_title_norm = normalize(video_title)
             video_id = item["id"]["videoId"]
             
             # Estrae tutti gli anni a 4 cifre presenti nel titolo del video
             years_in_title = re.findall(r'\b\d{4}\b', video_title)
             
-            # Verifica corrispondenza normalizzata
-            title_matches = main_title_norm in video_title_norm
+            # Se l'anno cercato e l'anno nel video non corrispondono (se il video ha anni specificati), continuiamo
+            if year and years_in_title and year not in years_in_title:
+                continue
+                
+            # 1. Tentativo di parsing strutturato del titolo del video
+            parsed = parse_video_title(video_title)
+            if parsed:
+                extracted_title, extracted_year, extracted_director = parsed
+                extracted_title_norm = normalize_no_spaces(extracted_title)
+                
+                # Se i titoli coincidono in modo esatto (con o senza articoli iniziali)
+                if (main_title_norm_ns == extracted_title_norm or 
+                    main_title_stripped_ns == extracted_title_norm):
+                    if not year or not extracted_year or year == extracted_year:
+                        return video_id
+                        
+            # 2. Fallback per corrispondenza sottostringa più cauta
+            video_title_norm_ks = normalize_keep_spaces(video_title)
+            video_title_norm_ns = normalize_no_spaces(video_title)
             
+            # Se il titolo del film è molto corto (lunghezza < 4 caratteri), verifichiamo che sia una parola intera
+            if len(main_title_stripped_ks) < 4:
+                padded_video = f" {video_title_norm_ks} "
+                title_matches = (
+                    f" {main_title_norm_ks} " in padded_video or 
+                    f" {main_title_stripped_ks} " in padded_video
+                )
+            else:
+                title_matches = (
+                    (main_title_norm_ks in video_title_norm_ks) or 
+                    (main_title_norm_ns in video_title_norm_ns) or
+                    (main_title_stripped_ks in video_title_norm_ks) or
+                    (main_title_stripped_ns in video_title_norm_ns)
+                )
+                
             if not title_matches:
                 continue
                 
@@ -172,8 +222,8 @@ async def search_frusciante_video(title: str, year: str, director: str) -> str |
                     fallback_item = video_id
                 continue
                 
-            # Se l'anno cercato è presente nel titolo, abbiamo un match esatto!
-            if year in years_in_title:
+            # Se l'anno cercato è presente nel titolo o non stiamo cercando un anno specifico
+            if not year or year in years_in_title:
                 return video_id
                 
         # Se non abbiamo trovato un match esatto ma abbiamo un fallback senza anno nel titolo, lo usiamo
