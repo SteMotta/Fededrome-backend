@@ -15,8 +15,9 @@ graph TD
     Client -->|https://db.fededrome.app| Nginx
     
     subgraph VPS ["Droplet VPS (Docker)"]
-        Nginx -->|Porta 8000 Interna| FastAPI[FastAPI Backend - fededrome_api]
-        Nginx -->|Porta 8000 Host Loopback| Kong[Supabase Kong Gateway - supabase_kong]
+        Nginx -->|Rete Interna Docker:8000| FastAPI[FastAPI Backend - fededrome_api]
+        Nginx -->|Rete Interna Docker:8000| Kong[Supabase Kong Gateway - supabase-kong]
+        FastAPI -->|Rete Interna Docker:8000| Kong
         FastAPI -->|Porta 6379 Interna| Redis[Redis Cache - fededrome_redis]
         Kong -->|Porta 5432| DB[(Supabase Postgres - supabase_db)]
         Kong -->|Porta 9999| Auth[Supabase Auth / GoTrue - supabase_auth]
@@ -100,10 +101,7 @@ sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyring
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 
 # Configura il repository APT
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 # Installa Docker
 sudo apt update
@@ -138,82 +136,42 @@ Generiamo un unico certificato SSL valido sia per `api.fededrome.app` che per `d
 
 ```bash
 # Richiedi il certificato (Certbot userà una porta 80 temporanea standalone)
-sudo certbot certonly --standalone -d api.fededrome.app -d db.fededrome.app \
-  --non-interactive --agree-tos --email admin@fededrome.app
+sudo certbot certonly --standalone -d api.fededrome.app -d db.fededrome.app --non-interactive --agree-tos --email admin@fededrome.app
 ```
 *I certificati verranno salvati in `/etc/letsencrypt/live/api.fededrome.app/`.*
 
 ---
 
-## 🗃️ Fase 3: Setup di Supabase Self-Hosted
+## 🗃️ Fase 3: Setup di Supabase Self-Hosted (Metodo Semplificato Ufficiale)
 
-Eseguiamo l'installazione di Supabase in una cartella separata dal codice applicativo backend.
-
-```bash
-# Clona il repository ufficiale di Supabase a versione controllata
-git clone --depth 1 https://github.com/supabase/supabase.git /opt/supabase
-
-# Entra nella cartella di configurazione Docker
-cd /opt/supabase/docker
-cp .env.example .env
-```
-
-### 1. Generazione delle Password e dei Secret
-Esegui i comandi `openssl` per generare password sicure e copiale:
+Eseguiamo l'installazione di Supabase in una cartella separata dal codice applicativo backend utilizzando lo script ufficiale di installazione rapida. Questo script scarica i file necessari e genera automaticamente password e chiavi JWT sicure.
 
 ```bash
-# Password per PostgreSQL
-openssl rand -base64 32
-
-# Chiave segreta simmetrica JWT (Minimo 32 caratteri)
-openssl rand -base64 32
+# Esegui lo script di setup ufficiale nella cartella /opt
+cd /opt
+curl -fsSL https://supabase.link/setup.sh | sh
 ```
 
-### 2. Generazione di ANON_KEY e SERVICE_ROLE_KEY
-Usa questo script Python rapido per generare i token JWT corretti da inserire nel file `.env` di Supabase.
+### 1. Risposte ai Prompt Interattivi dello Script
+Durante l'esecuzione, lo script ti chiederà di configurare alcune variabili. Inserisci i seguenti valori:
+* **Project Name:** Premi Invio per accettare il default `supabase-project` (verrà creata la cartella `/opt/supabase-project`).
+* **SUPABASE_PUBLIC_URL:** Digita `https://db.fededrome.app` (l'URL pubblico configurato per Nginx).
+* **SITE_URL / App URL:** Digita `https://fededrome.app` (l'indirizzo del tuo frontend).
+* **Dashboard Password:** Scegli una password robusta per accedere al pannello locale di Supabase Studio.
+
+*Lo script genererà automaticamente tutte le chiavi (`POSTGRES_PASSWORD`, `JWT_SECRET`, `ANON_KEY`, `SERVICE_ROLE_KEY`, ecc.) salvandole nel file `.env`.*
+
+### 2. Configurazione Personalizzata di `/opt/supabase-project/.env`
+Accedi alla cartella generata e modifica il file `.env` per inserire i parametri SMTP (Resend) e abilitare il social login:
 
 ```bash
-# Installa PyJWT per firmare i token
-pip3 install PyJWT
+cd /opt/supabase-project
+nano .env
 ```
 
-Esegui lo script (salvalo come `gen_keys.py` ed eseguilo con `python3 gen_keys.py`):
-```python
-import jwt
-from datetime import datetime, timedelta
-
-jwt_secret = "INSERISCI_IL_JWT_SECRET_GENERATO_SOPRA"
-
-anon_payload = {
-    "role": "anon",
-    "iss": "supabase",
-    "iat": int(datetime.utcnow().timestamp()),
-    "exp": int((datetime.utcnow() + timedelta(days=3650)).timestamp())
-}
-anon_key = jwt.encode(anon_payload, jwt_secret, algorithm="HS256")
-
-service_payload = {
-    "role": "service_role",
-    "iss": "supabase",
-    "iat": int(datetime.utcnow().timestamp()),
-    "exp": int((datetime.utcnow() + timedelta(days=3650)).timestamp())
-}
-service_key = jwt.encode(service_payload, jwt_secret, algorithm="HS256")
-
-print("ANON_KEY:", anon_key)
-print("SERVICE_ROLE_KEY:", service_key)
-```
-
-### 3. Configurazione del file `/opt/supabase/docker/.env`
-Modifica il file `.env` compilando le chiavi con i valori generati sopra:
+Aggiungi o sostituisci le seguenti configurazioni:
 
 ```dotenv
-# Postgres & JWT
-POSTGRES_PASSWORD=il_tuo_postgres_password_sicuro
-JWT_SECRET=il_tuo_jwt_secret_generato
-ANON_KEY=il_tuo_anon_key_generato
-SERVICE_ROLE_KEY=il_tuo_service_role_key_generato
-
 # Disabilita l'autoconferma email per obbligare l'utente alla verifica
 GOTRUE_MAILER_AUTOCONFIRM=false
 
@@ -233,7 +191,6 @@ GOTRUE_SMTP_ADMIN_EMAIL=noreply@fededrome.app
 GOTRUE_SMTP_SENDER_NAME="Fededrome"
 
 # Configurazione Deep Link e Redirects
-GOTRUE_SITE_URL=https://fededrome.app
 GOTRUE_URI_ALLOW_LIST=https://fededrome.app/*,fededrome://*
 
 # Abilitazione Google OAuth
@@ -242,8 +199,8 @@ GOOGLE_CLIENT_ID=il_tuo_client_id_google.apps.googleusercontent.com
 GOOGLE_SECRET=il_tuo_client_secret_google
 ```
 
-### 4. Abilitazione Google OAuth in `/opt/supabase/docker/docker-compose.yml`
-Assicurati che sotto il servizio `auth`, all'interno della sezione `environment`, siano dichiarate queste righe:
+### 3. Abilitazione Google OAuth in `/opt/supabase-project/docker-compose.yml`
+Verifica che all'interno di `/opt/supabase-project/docker-compose.yml`, sotto il servizio `auth` nella sezione `environment`, siano dichiarate queste righe:
 ```yaml
       GOTRUE_EXTERNAL_GOOGLE_ENABLED: ${GOOGLE_ENABLED}
       GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
@@ -251,12 +208,15 @@ Assicurati che sotto il servizio `auth`, all'interno della sezione `environment`
       GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: https://db.fededrome.app/auth/v1/callback
 ```
 
-### 5. Avvio di Supabase
+### 4. Avvio di Supabase
 ```bash
 docker compose up -d
 # Verifica che tutti i servizi Supabase siano attivi ed in stato healthy
 docker compose ps
 ```
+
+> [!NOTE]
+> **Rete Docker Esterna**: L'avvio di Supabase creerà automaticamente una rete Docker bridge di default denominata `supabase_default`. Questa rete è fondamentale perché vi collegheremo il backend di Fededrome nella fase successiva, consentendo a Nginx e FastAPI di comunicare direttamente con Kong.
 
 ---
 
@@ -278,8 +238,10 @@ nano .env
 Compila il file di produzione inserendo le chiavi generate in Supabase e le API esterne:
 
 ```dotenv
-# Supabase (Punta all'URL DNS pubblico di Supabase appena configurato)
-SUPABASE_URL=https://db.fededrome.app
+# Supabase (Configurazione interna per massimizzare le performance ed eliminare la latenza)
+# Usando l'hostname interno del container Kong 'http://supabase-kong:8000' (sulla rete 'supabase_default'),
+# FastAPI parlerà direttamente con Supabase senza passare da internet o fare handshake SSL.
+SUPABASE_URL=http://supabase-kong:8000
 SUPABASE_ANON_KEY=incolla_l_anon_key_di_supabase
 SUPABASE_SERVICE_ROLE_KEY=incolla_il_service_role_key_di_supabase
 

@@ -17,6 +17,7 @@ services:
         condition: service_healthy
     networks:
       - fededrome_network
+      - supabase_network
 
   fastapi:
     build:
@@ -34,6 +35,7 @@ services:
         condition: service_healthy
     networks:
       - fededrome_network
+      - supabase_network
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
@@ -73,3 +75,6 @@ networks:
     ipam:
       config:
         - subnet: "fd00:1::/80"
+  supabase_network:
+    name: supabase_default
+    external: true
