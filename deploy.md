@@ -173,7 +173,20 @@ mkdir -p /opt/supabase-project/volumes/functions/send-email
 cp /opt/fededrome-backend/supabase/functions/send-email/index.ts /opt/supabase-project/volumes/functions/send-email/index.ts
 ```
 
-### 3. Configurazione del file `/opt/supabase-project/.env`
+### 3. Verifica del Dominio su Resend (Prerequisito Email)
+
+Prima di poter inviare email tramite Resend, è **obbligatorio** verificare il dominio mittente (`fededrome.app`) sulla piattaforma Resend. Senza questo passaggio, l'API restituirà un errore `403 - domain is not verified`.
+
+1. Accedi a **[https://resend.com/domains](https://resend.com/domains)**
+2. Clicca **"Add Domain"** e inserisci `fededrome.app`
+3. Resend mostrerà una lista di **record DNS** da aggiungere (tipicamente MX, SPF/TXT e DKIM/CNAME)
+4. Aggiungi i record DNS nel pannello del tuo registrar/provider DNS (es. Cloudflare, Namecheap, ecc.)
+5. Torna su Resend e clicca **"Verify"**
+
+> [!IMPORTANT]
+> La propagazione DNS può richiedere da pochi minuti fino a 48 ore. Finché il dominio non è verificato, tutte le chiamate all'API di Resend per inviare email da `@fededrome.app` falliranno con errore `403 validation_error`.
+
+### 4. Configurazione del file `.env` di Supabase
 Modifica il file `.env` di Supabase per configurare l'Hook di autenticazione e inserire la chiave API di Resend:
 
 ```bash
@@ -181,14 +194,20 @@ cd /opt/supabase-project
 nano .env
 ```
 
-Aggiungi o sostituisci le seguenti configurazioni nel file (lascia commentate o ometti le impostazioni relative a `SMTP_HOST`, `SMTP_PORT`, ecc.):
+Aggiungi o modifica le seguenti configurazioni nel file (attenzione a **non sovrascrivere o eliminare** le altre variabili autogenerate dallo script come `POSTGRES_PASSWORD`, `JWT_SECRET`, `ANON_KEY`, ecc., altrimenti lo stack non funzionerà):
 
 ```dotenv
-# Disabilita l'autoconferma email per obbligare l'utente alla verifica
-GOTRUE_MAILER_AUTOCONFIRM=false
+# Abilitazione e configurazione della registrazione/conferma email
+ENABLE_EMAIL_SIGNUP=true
+ENABLE_EMAIL_AUTOCONFIRM=false
 
-# Configurazione Custom Hook per l'invio delle email di Auth
-GOTRUE_HOOKS_SEND_EMAIL_URI=http://functions:9000/send-email
+# Configurazione SMTP di fallback (anche se non usata, SMTP_PORT deve contenere un intero valido)
+SMTP_PORT=587
+
+# Configurazione Custom Hook per l'invio delle email di Auth (Bypass SMTP)
+# Usiamo l'URL HTTPS pubblico di Supabase per superare le restrizioni di sicurezza di GoTrue (che impedisce HTTP per host non-loopback)
+GOTRUE_HOOK_SEND_EMAIL_ENABLED=true
+GOTRUE_HOOK_SEND_EMAIL_URI=https://db.fededrome.app/functions/v1/send-email
 RESEND_API_KEY=re_tua_chiave_api_di_resend
 
 # Configurazione Deep Link e Redirects
@@ -199,6 +218,9 @@ GOOGLE_ENABLED=true
 GOOGLE_CLIENT_ID=il_tuo_client_id_google.apps.googleusercontent.com
 GOOGLE_SECRET=il_tuo_client_secret_google
 ```
+
+> [!WARNING]
+> Le variabili booleane (`ENABLE_EMAIL_SIGNUP`, `ENABLE_EMAIL_AUTOCONFIRM`) e gli interi (`SMTP_PORT`) sono mappati direttamente nel `docker-compose.yml` di Supabase. Non lasciarli mai vuoti o non impostati (es. `SMTP_PORT=`), altrimenti GoTrue fallirà il parsing del tipo all'avvio (con errori del tipo `converting '' to type bool` o `converting '' to type int`) ed entrerà in crash-loop. Anche se si usa il Custom Hook di Resend bypassando il server SMTP, `SMTP_PORT` deve comunque essere valorizzata con un numero intero (es. `587` o `2525`).
 
 ### 4. Configurazione delle variabili d'ambiente in `docker-compose.yml`
 Dobbiamo assicurarci che il container che esegue le Edge Functions possa leggere la chiave API di Resend e l'URL pubblico di Supabase.
@@ -217,8 +239,16 @@ Dobbiamo assicurarci che il container che esegue le Edge Functions possa leggere
          RESEND_API_KEY: ${RESEND_API_KEY}
          SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
    ```
-3. Verifica inoltre che, sotto il servizio `auth` nella sezione `environment`, siano dichiarate le righe per Google OAuth:
+3. Sotto il servizio **`auth`** nella sezione `environment`, scommenta o aggiungi le righe per abilitare il Custom Hook e per configurare Google OAuth:
    ```yaml
+         # Custom Email Hook (Bypass SMTP)
+         GOTRUE_HOOK_SEND_EMAIL_ENABLED: ${GOTRUE_HOOK_SEND_EMAIL_ENABLED}
+         GOTRUE_HOOK_SEND_EMAIL_URI: ${GOTRUE_HOOK_SEND_EMAIL_URI}
+
+         # Deep Link e Redirect consentiti (necessario per redirect verso schema custom fededrome://)
+         GOTRUE_URI_ALLOW_LIST: ${GOTRUE_URI_ALLOW_LIST}
+
+         # Google OAuth
          GOTRUE_EXTERNAL_GOOGLE_ENABLED: ${GOOGLE_ENABLED}
          GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
          GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOOGLE_SECRET}
@@ -234,6 +264,9 @@ docker compose up -d
 # Verifica che tutti i servizi (inclusi auth e functions) siano attivi ed in stato healthy
 docker compose ps
 ```
+
+> [!WARNING]
+> Ogni volta che modifichi il file `docker-compose.yml` o il file `.env`, un semplice `docker compose restart` **non caricherà** le nuove variabili né le modifiche strutturali. Per forzare l'applicazione dei nuovi valori (es. `RESEND_API_KEY` o i parametri del Custom Hook), devi eseguire `docker compose up -d` (che ricrea automaticamente solo i container modificati) oppure effettuare un ciclo completo di `docker compose down` e `docker compose up -d`.
 
 > [!NOTE]
 > **Rete Docker Esterna**: L'avvio di Supabase creerà automaticamente una rete Docker bridge di default denominata `supabase_default`. Questa rete è fondamentale perché vi collegheremo il backend di Fededrome nella fase successiva, consentendo a Nginx e FastAPI di comunicare direttamente con Kong e con il container `functions`.

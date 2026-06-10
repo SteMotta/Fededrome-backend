@@ -5,10 +5,10 @@ interface WebhookPayload {
     email: string;
     id: string;
   };
-  email: {
+  email_data: {
     email_action_type: string;
     token_hash: string;
-    redirect_url: string;
+    redirect_to: string;
   };
 }
 
@@ -46,18 +46,18 @@ Deno.serve(async (req) => {
     }
 
     // 4. Validazione dei campi essenziali
-    if (!payload?.user?.email || !payload?.email?.email_action_type || !payload?.email?.token_hash) {
+    if (!payload?.user?.email || !payload?.email_data?.email_action_type || !payload?.email_data?.token_hash) {
       return new Response(
         JSON.stringify({ error: "Missing required fields in webhook payload." }), 
         { status: 400, headers: { "Content-Type": "application/json" } }
       )
     }
 
-    const { email_action_type, token_hash, redirect_url } = payload.email
+    const { email_action_type, token_hash, redirect_to } = payload.email_data
     const toEmail = payload.user.email
 
-    // Costruisci il link di conferma per l'utente
-    const confirmLink = `${supabasePublicUrl}/auth/v1/verify?token=${token_hash}&type=${email_action_type}&redirect_to=${redirect_url}`
+    // Costruisci il link di conferma per l'utente (redirect_to va URL-encoded per preservare lo schema custom fededrome://)
+    const confirmLink = `${supabasePublicUrl}/auth/v1/verify?token=${token_hash}&type=${email_action_type}&redirect_to=${encodeURIComponent(redirect_to)}`
 
     let subject = ""
     let htmlContent = ""
