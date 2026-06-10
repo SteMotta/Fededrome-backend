@@ -161,34 +161,35 @@ Durante l'esecuzione, lo script ti chiederà di configurare alcune variabili. In
 
 *Lo script genererà automaticamente tutte le chiavi (`POSTGRES_PASSWORD`, `JWT_SECRET`, `ANON_KEY`, `SERVICE_ROLE_KEY`, ecc.) salvandole nel file `.env`.*
 
-### 2. Configurazione Personalizzata di `/opt/supabase-project/.env`
-Accedi alla cartella generata e modifica il file `.env` per inserire i parametri SMTP (Resend) e abilitare il social login:
+### 2. Copia del Codice della Edge Function sulla VPS
+Poiché DigitalOcean blocca a monte le porte SMTP standard (25, 465, 587), l'invio delle email di conferma registrazione (`signup`) e reset password (`recovery`) avverrà tramite una **Edge Function** (Deno) integrata in Supabase, che effettuerà chiamate HTTP dirette (porta `443` HTTPS) verso l'API di Resend.
+
+Il file `index.ts` con la logica di invio è presente nel repository del backend. Creiamo la directory corretta e copiamolo nei volumi di Supabase prima dell'avvio:
+```bash
+# Crea la cartella per la funzione send-email
+mkdir -p /opt/supabase-project/volumes/functions/send-email
+
+# Copia il file index.ts dal repository del backend
+cp /opt/fededrome-backend/supabase/functions/send-email/index.ts /opt/supabase-project/volumes/functions/send-email/index.ts
+```
+
+### 3. Configurazione del file `/opt/supabase-project/.env`
+Modifica il file `.env` di Supabase per configurare l'Hook di autenticazione e inserire la chiave API di Resend:
 
 ```bash
 cd /opt/supabase-project
 nano .env
 ```
 
-Aggiungi o sostituisci le seguenti configurazioni:
+Aggiungi o sostituisci le seguenti configurazioni nel file (lascia commentate o ometti le impostazioni relative a `SMTP_HOST`, `SMTP_PORT`, ecc.):
 
 ```dotenv
 # Disabilita l'autoconferma email per obbligare l'utente alla verifica
 GOTRUE_MAILER_AUTOCONFIRM=false
 
-# Configurazione SMTP per Resend
-SMTP_HOST=smtp.resend.com
-SMTP_PORT=587
-SMTP_USER=resend
-SMTP_PASS=re_tuachiaveapi_resend_generata
-SMTP_SENDER_EMAIL=noreply@fededrome.app
-
-# Replicazione variabili per GoTrue (Auth)
-GOTRUE_SMTP_HOST=smtp.resend.com
-GOTRUE_SMTP_PORT=587
-GOTRUE_SMTP_USER=resend
-GOTRUE_SMTP_PASS=re_tuachiaveapi_resend_generata
-GOTRUE_SMTP_ADMIN_EMAIL=noreply@fededrome.app
-GOTRUE_SMTP_SENDER_NAME="Fededrome"
+# Configurazione Custom Hook per l'invio delle email di Auth
+GOTRUE_HOOKS_SEND_EMAIL_URI=http://functions:9000/send-email
+RESEND_API_KEY=re_tua_chiave_api_di_resend
 
 # Configurazione Deep Link e Redirects
 GOTRUE_URI_ALLOW_LIST=https://fededrome.app/*,fededrome://*
@@ -199,24 +200,43 @@ GOOGLE_CLIENT_ID=il_tuo_client_id_google.apps.googleusercontent.com
 GOOGLE_SECRET=il_tuo_client_secret_google
 ```
 
-### 3. Abilitazione Google OAuth in `/opt/supabase-project/docker-compose.yml`
-Verifica che all'interno di `/opt/supabase-project/docker-compose.yml`, sotto il servizio `auth` nella sezione `environment`, siano dichiarate queste righe:
-```yaml
-      GOTRUE_EXTERNAL_GOOGLE_ENABLED: ${GOOGLE_ENABLED}
-      GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
-      GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOOGLE_SECRET}
-      GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: https://db.fededrome.app/auth/v1/callback
-```
+### 4. Configurazione delle variabili d'ambiente in `docker-compose.yml`
+Dobbiamo assicurarci che il container che esegue le Edge Functions possa leggere la chiave API di Resend e l'URL pubblico di Supabase.
 
-### 4. Avvio di Supabase
+1. Apri il file di configurazione di Supabase:
+   ```bash
+   nano /opt/supabase-project/docker-compose.yml
+   ```
+2. Cerca il servizio **`functions`** e, sotto la voce `environment`, aggiungi queste due righe:
+   ```yaml
+     functions:
+       image: supabase/edge-runtime:v1.42.0
+       # ... altre configurazioni ...
+       environment:
+         # ... altre variabili esistenti ...
+         RESEND_API_KEY: ${RESEND_API_KEY}
+         SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
+   ```
+3. Verifica inoltre che, sotto il servizio `auth` nella sezione `environment`, siano dichiarate le righe per Google OAuth:
+   ```yaml
+         GOTRUE_EXTERNAL_GOOGLE_ENABLED: ${GOOGLE_ENABLED}
+         GOTRUE_EXTERNAL_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+         GOTRUE_EXTERNAL_GOOGLE_SECRET: ${GOOGLE_SECRET}
+         GOTRUE_EXTERNAL_GOOGLE_REDIRECT_URI: https://db.fededrome.app/auth/v1/callback
+   ```
+4. Salva e chiudi.
+
+### 5. Avvio di Supabase
+Avvia lo stack di Supabase compilando le impostazioni modificate:
+
 ```bash
 docker compose up -d
-# Verifica che tutti i servizi Supabase siano attivi ed in stato healthy
+# Verifica che tutti i servizi (inclusi auth e functions) siano attivi ed in stato healthy
 docker compose ps
 ```
 
 > [!NOTE]
-> **Rete Docker Esterna**: L'avvio di Supabase creerà automaticamente una rete Docker bridge di default denominata `supabase_default`. Questa rete è fondamentale perché vi collegheremo il backend di Fededrome nella fase successiva, consentendo a Nginx e FastAPI di comunicare direttamente con Kong.
+> **Rete Docker Esterna**: L'avvio di Supabase creerà automaticamente una rete Docker bridge di default denominata `supabase_default`. Questa rete è fondamentale perché vi collegheremo il backend di Fededrome nella fase successiva, consentendo a Nginx e FastAPI di comunicare direttamente con Kong e con il container `functions`.
 
 ---
 
