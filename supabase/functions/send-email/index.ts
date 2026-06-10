@@ -1,7 +1,4 @@
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts"
-
-const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY")
-const SUPABASE_PUBLIC_URL = Deno.env.get("SUPABASE_PUBLIC_URL") || "https://db.fededrome.app"
+// index.ts - Custom Auth Hook per l'invio di email via Resend
 
 interface WebhookPayload {
   user: {
@@ -15,18 +12,57 @@ interface WebhookPayload {
   };
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
+  // 1. Forza solo il metodo POST per sicurezza
+  if (req.method !== "POST") {
+    return new Response(
+      JSON.stringify({ error: "Method not allowed. Only POST is accepted." }), 
+      { status: 405, headers: { "Content-Type": "application/json" } }
+    )
+  }
+
+  // 2. Recupera e valida la chiave API di Resend dinamica
+  const resendApiKey = Deno.env.get("RESEND_API_KEY")
+  if (!resendApiKey) {
+    console.error("CRITICAL ERROR: RESEND_API_KEY non è configurata nelle variabili del container.")
+    return new Response(
+      JSON.stringify({ error: "Server misconfiguration: missing email API key." }), 
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    )
+  }
+
+  const supabasePublicUrl = Deno.env.get("SUPABASE_PUBLIC_URL") || "https://db.fededrome.app"
+
   try {
-    const payload: WebhookPayload = await req.json()
+    // 3. Parsing sicuro del payload JSON
+    let payload: WebhookPayload
+    try {
+      payload = await req.json()
+    } catch {
+      return new Response(
+        JSON.stringify({ error: "Malformed JSON payload." }), 
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      )
+    }
+
+    // 4. Validazione dei campi essenziali
+    if (!payload?.user?.email || !payload?.email?.email_action_type || !payload?.email?.token_hash) {
+      return new Response(
+        JSON.stringify({ error: "Missing required fields in webhook payload." }), 
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      )
+    }
+
     const { email_action_type, token_hash, redirect_url } = payload.email
     const toEmail = payload.user.email
 
-    // Costruisci il link di conferma per il client
-    const confirmLink = `${SUPABASE_PUBLIC_URL}/auth/v1/verify?token=${token_hash}&type=${email_action_type}&redirect_to=${redirect_url}`
+    // Costruisci il link di conferma per l'utente
+    const confirmLink = `${supabasePublicUrl}/auth/v1/verify?token=${token_hash}&type=${email_action_type}&redirect_to=${redirect_url}`
 
     let subject = ""
     let htmlContent = ""
 
+    // 5. Composizione dei template email (signup e recovery)
     if (email_action_type === "signup") {
       subject = "Benvenuto su Fededrome! Conferma il tuo account"
       htmlContent = `
@@ -62,7 +98,7 @@ serve(async (req) => {
         </html>
       `
     } else {
-      // Fallback per altri tipi di email
+      // Fallback generico per altri eventi
       subject = `Verifica Account Fededrome - ${email_action_type}`
       htmlContent = `
         <html>
@@ -81,16 +117,11 @@ serve(async (req) => {
       `
     }
 
-    if (!RESEND_API_KEY) {
-      console.error("Errore: RESEND_API_KEY non configurata nelle Edge Functions.")
-      return new Response(JSON.stringify({ error: "Missing Resend API Key" }), { status: 500 })
-    }
-
-    // Effettua la richiesta HTTP POST all'API di Resend
+    // 6. Chiamata HTTP asincrona all'API di Resend
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${RESEND_API_KEY}`,
+        "Authorization": `Bearer ${resendApiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -104,16 +135,23 @@ serve(async (req) => {
     if (!res.ok) {
       const errText = await res.text()
       console.error(`Errore risposta Resend API: ${res.status} - ${errText}`)
-      return new Response(JSON.stringify({ error: "Failed to send email via Resend" }), { status: 500 })
+      return new Response(
+        JSON.stringify({ error: "Failed to dispatch email via provider." }), 
+        { status: 502, headers: { "Content-Type": "application/json" } }
+      )
     }
 
-    return new Response(JSON.stringify({ status: "success" }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    })
+    // Risposta di successo per Supabase Auth
+    return new Response(
+      JSON.stringify({ status: "success" }), 
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    )
 
   } catch (error) {
-    console.error(`Errore Edge Function: ${error.message}`)
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 })
+    console.error(`Errore generico Edge Function send-email: ${error.message}`)
+    return new Response(
+      JSON.stringify({ error: "Internal server error in custom email hook." }), 
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    )
   }
 })
